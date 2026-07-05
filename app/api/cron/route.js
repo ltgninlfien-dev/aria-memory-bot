@@ -10,7 +10,7 @@ const STATE_BLOB_PATH = 'aria-bot-state.json';
 
 async function loadState() {
   try {
-    const result = await get(STATE_BLOB_PATH, { token: process.env.BLOB_READ_WRITE_TOKEN });
+    const result = await get(STATE_BLOB_PATH, { access: 'private' });
     const text = await result.blob.text();
     return JSON.parse(text);
   } catch {
@@ -31,8 +31,7 @@ async function saveState(state) {
   await put(STATE_BLOB_PATH, JSON.stringify(state), {
     access: 'private',
     contentType: 'application/json',
-    allowOverwrite: true,
-    token: process.env.BLOB_READ_WRITE_TOKEN
+    allowOverwrite: true
   });
 }
 
