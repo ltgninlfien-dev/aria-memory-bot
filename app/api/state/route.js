@@ -2,18 +2,24 @@
 // Route de LECTURE utilisée par l'interface web pour afficher l'état géré par le cron serveur.
 // L'interface ne fait plus de trading elle-même — elle affiche ce que le cron a décidé.
 
-import { get } from '@vercel/blob';
+import { Redis } from '@upstash/redis';
 import { STARTING_CAPITAL } from '../../lib/tradingEngine';
 
-const STATE_BLOB_PATH = 'aria-bot-state.json';
+const STATE_KEY = 'aria-bot-state';
+
+function getRedis() {
+  return new Redis({
+    url: process.env.KV_REST_API_URL,
+    token: process.env.KV_REST_API_TOKEN
+  });
+}
 
 export async function GET() {
   try {
-    const result = await get(STATE_BLOB_PATH, { access: 'private' });
-    const text = await result.blob.text();
-    const state = JSON.parse(text);
-    return Response.json(state);
-  } catch {
+    const redis = getRedis();
+    const state = await redis.get(STATE_KEY);
+    if (state) return Response.json(state);
+
     return Response.json({
       trades: [],
       params: { rsiOverbought: 70, rsiOversold: 30, confidenceThreshold: 0.6 },
@@ -24,5 +30,7 @@ export async function GET() {
       lastCheckedAt: null,
       notice: 'Aucune donnée encore — le cron serveur n\'a pas encore tourné.'
     });
+  } catch (err) {
+    return Response.json({ error: err.message }, { status: 500 });
   }
 }
