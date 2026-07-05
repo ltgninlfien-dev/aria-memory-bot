@@ -10,7 +10,7 @@ const STATE_BLOB_PATH = 'aria-bot-state.json';
 
 async function loadState() {
   try {
-    const blobInfo = await head(STATE_BLOB_PATH);
+    const blobInfo = await head(STATE_BLOB_PATH, { token: process.env.BLOB_READ_WRITE_TOKEN });
     const res = await fetch(blobInfo.url, { cache: 'no-store' });
     return await res.json();
   } catch {
@@ -31,7 +31,8 @@ async function saveState(state) {
   await put(STATE_BLOB_PATH, JSON.stringify(state), {
     access: 'public',
     contentType: 'application/json',
-    allowOverwrite: true
+    allowOverwrite: true,
+    token: process.env.BLOB_READ_WRITE_TOKEN
   });
 }
 
