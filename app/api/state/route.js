@@ -22,7 +22,7 @@ export async function GET() {
 
     return Response.json({
       trades: [],
-      params: { rsiOverbought: 70, rsiOversold: 30, confidenceThreshold: 0.6 },
+      params: { rsiOverbought: 70, rsiOversold: 30, confidenceThreshold: 0.45 },
       account: { balance: STARTING_CAPITAL, equity: STARTING_CAPITAL },
       openPosition: null,
       lastSignal: null,
