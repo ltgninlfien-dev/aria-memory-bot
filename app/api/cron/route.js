@@ -15,12 +15,15 @@ function getRedis() {
   });
 }
 
-async function loadState(redis) {
+async function loadState(redis, forceResetParams) {
   const state = await redis.get(STATE_KEY);
-  if (state) return state;
+  if (state && !forceResetParams) return state;
+  if (state && forceResetParams) {
+    return { ...state, params: { rsiOverbought: 70, rsiOversold: 30, confidenceThreshold: 0.45 } };
+  }
   return {
     trades: [],
-    params: { rsiOverbought: 70, rsiOversold: 30, confidenceThreshold: 0.6 },
+    params: { rsiOverbought: 70, rsiOversold: 30, confidenceThreshold: 0.45 },
     account: { balance: STARTING_CAPITAL, equity: STARTING_CAPITAL },
     openPosition: null,
     lastSignal: null,
@@ -37,6 +40,7 @@ export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const secret = searchParams.get('secret');
   const apiKey = searchParams.get('apikey');
+  const resetParams = searchParams.get('resetParams') === 'true';
 
   if (secret !== process.env.CRON_SECRET) {
     return Response.json({ error: 'Non autorisé' }, { status: 401 });
@@ -47,7 +51,7 @@ export async function GET(request) {
 
   try {
     const redis = getRedis();
-    const state = await loadState(redis);
+    const state = await loadState(redis, resetParams);
 
     const marketRes = await fetch(
       `https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=5min&outputsize=50&apikey=${apiKey}`,
