@@ -3,16 +3,16 @@
 // Elle exécute un cycle complet : récupère le prix, calcule le signal, décide, sauvegarde.
 // Protégée par une clé secrète pour éviter les appels non autorisés.
 
-import { put, head } from '@vercel/blob';
+import { put, get } from '@vercel/blob';
 import { runTradingCycle, STARTING_CAPITAL } from '../../lib/tradingEngine';
 
 const STATE_BLOB_PATH = 'aria-bot-state.json';
 
 async function loadState() {
   try {
-    const blobInfo = await head(STATE_BLOB_PATH, { token: process.env.BLOB_READ_WRITE_TOKEN });
-    const res = await fetch(blobInfo.url, { cache: 'no-store' });
-    return await res.json();
+    const result = await get(STATE_BLOB_PATH, { access: 'private', token: process.env.BLOB_READ_WRITE_TOKEN });
+    const text = await result.blob.text();
+    return JSON.parse(text);
   } catch {
     // Aucun état existant : on initialise
     return {
@@ -29,7 +29,7 @@ async function loadState() {
 
 async function saveState(state) {
   await put(STATE_BLOB_PATH, JSON.stringify(state), {
-    access: 'public',
+    access: 'private',
     contentType: 'application/json',
     allowOverwrite: true,
     token: process.env.BLOB_READ_WRITE_TOKEN
