@@ -1,7 +1,7 @@
 "use client";
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
-import { TrendingUp, TrendingDown, Brain, Activity, Settings, Play, Pause, AlertTriangle, Target, History, Zap } from 'lucide-react';
+import { TrendingUp, TrendingDown, Brain, Activity, Settings, Play, Pause, AlertTriangle, Target, History, Zap, Download, Upload } from 'lucide-react';
 
 // ============ CONSTANTS ============
 const STARTING_CAPITAL = 10000;
@@ -85,6 +85,45 @@ async function saveParams(params) {
 }
 async function saveAccount(account) {
   try { localStorage.setItem('aria-account-state', JSON.stringify(account)); } catch (e) { console.error(e); }
+}
+
+// ============ EXPORT / IMPORT MEMORY ============
+function exportMemoryToFile(trades, params, account) {
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    trades,
+    params,
+    account,
+    version: 1
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const dateStr = new Date().toISOString().slice(0, 10);
+  a.href = url;
+  a.download = `aria-memory-backup-${dateStr}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function importMemoryFromFile(file, onSuccess, onError) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const payload = JSON.parse(e.target.result);
+      if (!payload.trades || !payload.params || !payload.account) {
+        onError('Fichier invalide : structure inattendue.');
+        return;
+      }
+      onSuccess(payload);
+    } catch (err) {
+      onError('Fichier invalide : impossible de lire le JSON.');
+    }
+  };
+  reader.onerror = () => onError('Erreur de lecture du fichier.');
+  reader.readAsText(file);
 }
 
 // ============ SIGNAL ENGINE ============
@@ -205,7 +244,9 @@ export default function TradingBot() {
   const [riskStatus, setRiskStatus] = useState(null);
   const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState('live');
+  const [importMessage, setImportMessage] = useState(null);
   const intervalRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   // Load memory on mount
   useEffect(() => {
@@ -331,6 +372,41 @@ export default function TradingBot() {
     }
     return () => clearInterval(intervalRef.current);
   }, [running, apiKeySet, fetchPrice]);
+
+  const handleExport = () => {
+    exportMemoryToFile(trades, params, account);
+    setImportMessage({ type: 'success', text: 'Sauvegarde téléchargée.' });
+    setTimeout(() => setImportMessage(null), 3000);
+  };
+
+  const handleImportClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileSelected = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    importMemoryFromFile(
+      file,
+      async (payload) => {
+        setTrades(payload.trades);
+        setParams(payload.params);
+        setAccount(payload.account);
+        const open = payload.trades.find(t => t.status === 'open');
+        setOpenPosition(open || null);
+        await saveTrades(payload.trades);
+        await saveParams(payload.params);
+        await saveAccount(payload.account);
+        setImportMessage({ type: 'success', text: `Mémoire restaurée (${payload.trades.length} trades, sauvegarde du ${new Date(payload.exportedAt).toLocaleDateString('fr-FR')}).` });
+        setTimeout(() => setImportMessage(null), 5000);
+      },
+      (errorMsg) => {
+        setImportMessage({ type: 'error', text: errorMsg });
+        setTimeout(() => setImportMessage(null), 5000);
+      }
+    );
+    e.target.value = '';
+  };
 
   const closedTrades = trades.filter(t => t.status === 'closed');
   const winRate = closedTrades.length > 0 ? (closedTrades.filter(t => t.pnl > 0).length / closedTrades.length * 100).toFixed(1) : '\u2014';
@@ -533,6 +609,40 @@ export default function TradingBot() {
 
           {activeTab === 'historique' && (
             <div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="application/json"
+                onChange={handleFileSelected}
+                style={{ display: 'none' }}
+              />
+              <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
+                <button
+                  onClick={handleExport}
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 16px', background: '#10151f', border: '1px solid #1f2733', borderRadius: 8, color: '#e8e6e1', fontFamily: 'IBM Plex Sans', fontWeight: 600, fontSize: 12, cursor: 'pointer' }}
+                >
+                  <Download size={14} color="#d4a843" />
+                  Exporter la mémoire
+                </button>
+                <button
+                  onClick={handleImportClick}
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 16px', background: '#10151f', border: '1px solid #1f2733', borderRadius: 8, color: '#e8e6e1', fontFamily: 'IBM Plex Sans', fontWeight: 600, fontSize: 12, cursor: 'pointer' }}
+                >
+                  <Upload size={14} color="#d4a843" />
+                  Importer une sauvegarde
+                </button>
+              </div>
+              {importMessage && (
+                <div style={{
+                  background: importMessage.type === 'success' ? '#10251a' : '#2a1318',
+                  border: `1px solid ${importMessage.type === 'success' ? '#1f4a30' : '#4a2229'}`,
+                  borderRadius: 8, padding: '10px 14px', marginBottom: 16,
+                  fontFamily: 'IBM Plex Sans', fontSize: 12,
+                  color: importMessage.type === 'success' ? '#8ae0a8' : '#e8a8a8'
+                }}>
+                  {importMessage.text}
+                </div>
+              )}
               {equityCurve.length > 1 && (
                 <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 12, padding: 20, marginBottom: 16 }}>
                   <div className="label-font" style={{ fontSize: 12, color: '#6b7685', marginBottom: 14 }}>COURBE D'\u00c9QUIT\u00c9</div>
