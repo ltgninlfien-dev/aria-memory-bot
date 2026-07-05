@@ -3,36 +3,34 @@
 // Elle exécute un cycle complet : récupère le prix, calcule le signal, décide, sauvegarde.
 // Protégée par une clé secrète pour éviter les appels non autorisés.
 
-import { put, get } from '@vercel/blob';
+import { Redis } from '@upstash/redis';
 import { runTradingCycle, STARTING_CAPITAL } from '../../lib/tradingEngine';
 
-const STATE_BLOB_PATH = 'aria-bot-state.json';
+const STATE_KEY = 'aria-bot-state';
 
-async function loadState() {
-  try {
-    const result = await get(STATE_BLOB_PATH, { access: 'private' });
-    const text = await result.blob.text();
-    return JSON.parse(text);
-  } catch {
-    // Aucun état existant : on initialise
-    return {
-      trades: [],
-      params: { rsiOverbought: 70, rsiOversold: 30, confidenceThreshold: 0.6 },
-      account: { balance: STARTING_CAPITAL, equity: STARTING_CAPITAL },
-      openPosition: null,
-      lastSignal: null,
-      riskPauseReason: null,
-      lastCheckedAt: null
-    };
-  }
+function getRedis() {
+  return new Redis({
+    url: process.env.KV_REST_API_URL,
+    token: process.env.KV_REST_API_TOKEN
+  });
 }
 
-async function saveState(state) {
-  await put(STATE_BLOB_PATH, JSON.stringify(state), {
-    access: 'private',
-    contentType: 'application/json',
-    allowOverwrite: true
-  });
+async function loadState(redis) {
+  const state = await redis.get(STATE_KEY);
+  if (state) return state;
+  return {
+    trades: [],
+    params: { rsiOverbought: 70, rsiOversold: 30, confidenceThreshold: 0.6 },
+    account: { balance: STARTING_CAPITAL, equity: STARTING_CAPITAL },
+    openPosition: null,
+    lastSignal: null,
+    riskPauseReason: null,
+    lastCheckedAt: null
+  };
+}
+
+async function saveState(redis, state) {
+  await redis.set(STATE_KEY, state);
 }
 
 export async function GET(request) {
@@ -48,7 +46,8 @@ export async function GET(request) {
   }
 
   try {
-    const state = await loadState();
+    const redis = getRedis();
+    const state = await loadState(redis);
 
     const marketRes = await fetch(
       `https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=5min&outputsize=50&apikey=${apiKey}`,
@@ -64,7 +63,7 @@ export async function GET(request) {
     const currentPrice = closes[closes.length - 1];
 
     const newState = runTradingCycle(state, closes, currentPrice);
-    await saveState(newState);
+    await saveState(redis, newState);
 
     return Response.json({
       ok: true,
