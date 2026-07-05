@@ -9,7 +9,7 @@ const STATE_BLOB_PATH = 'aria-bot-state.json';
 
 export async function GET() {
   try {
-    const result = await get(STATE_BLOB_PATH, { token: process.env.BLOB_READ_WRITE_TOKEN });
+    const result = await get(STATE_BLOB_PATH, { access: 'private' });
     const text = await result.blob.text();
     const state = JSON.parse(text);
     return Response.json(state);
