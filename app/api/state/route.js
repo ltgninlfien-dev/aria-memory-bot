@@ -2,16 +2,16 @@
 // Route de LECTURE utilisée par l'interface web pour afficher l'état géré par le cron serveur.
 // L'interface ne fait plus de trading elle-même — elle affiche ce que le cron a décidé.
 
-import { head } from '@vercel/blob';
+import { get } from '@vercel/blob';
 import { STARTING_CAPITAL } from '../../lib/tradingEngine';
 
 const STATE_BLOB_PATH = 'aria-bot-state.json';
 
 export async function GET() {
   try {
-    const blobInfo = await head(STATE_BLOB_PATH, { token: process.env.BLOB_READ_WRITE_TOKEN });
-    const res = await fetch(blobInfo.url, { cache: 'no-store' });
-    const state = await res.json();
+    const result = await get(STATE_BLOB_PATH, { access: 'private', token: process.env.BLOB_READ_WRITE_TOKEN });
+    const text = await result.blob.text();
+    const state = JSON.parse(text);
     return Response.json(state);
   } catch {
     return Response.json({
