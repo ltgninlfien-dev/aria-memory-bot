@@ -14,6 +14,17 @@ export const POSITION_SIZE_REDUCTION_AFTER_LOSS = 0.25;
 export const TREND_SMA_PERIOD = 50; // moyenne mobile pour détecter la tendance de fond
 export const MIN_VOLATILITY = 0.0003; // en dessous, le marché est jugé trop calme pour trader fiablement
 
+// ============ DYNAMIC STOP CONSTANTS ============
+// Le stop et le target sont calculés à l'ouverture à partir de la volatilité du moment,
+// puis figés pour toute la durée de vie du trade (pas de recalcul en cours de route).
+export const STOP_VOLATILITY_MULTIPLIER = 2;      // stop = volatilité × ce multiplicateur
+export const TARGET_VOLATILITY_MULTIPLIER = 4;    // target = volatilité × ce multiplicateur (ratio R:R = 1:2)
+// Bornes de sécurité : évitent un stop absurdement serré (marché mort) ou absurdement large (pic de volatilité).
+export const MIN_STOP_PCT = 0.006;   // 0.6% — plancher (abaissé de 0.8% pour laisser le calcul dynamique agir même en marché calme)
+export const MAX_STOP_PCT = 0.02;    // 2% — plafond, pour éviter un stop démesuré
+export const MIN_TARGET_PCT = 0.015; // 1.5% — ancien target fixe, sert de plancher
+export const MAX_TARGET_PCT = 0.035; // 3.5% — plafond
+
 // ============ INDICATOR MATH ============
 export function calcRSI(closes, period = 14) {
   if (closes.length < period + 1) return null;
@@ -78,6 +89,21 @@ export function calcVolatility(closes, period = 14) {
   const avgMove = sumAbsDiff / period;
   const avgPrice = recent.reduce((a, b) => a + b, 0) / recent.length;
   return avgMove / avgPrice; // volatilité relative, ex: 0.001 = 0.1% de mouvement moyen par bougie
+}
+
+// Calcule stop et target dynamiques à partir de la volatilité, bornés par les seuils de sécurité.
+// Retourne des pourcentages (ex: 0.012 = 1.2%).
+export function calcDynamicStopTarget(volatility) {
+  if (volatility === null || volatility === undefined || Number.isNaN(volatility)) {
+    return { stopPct: MIN_STOP_PCT, targetPct: MIN_TARGET_PCT };
+  }
+  const rawStop = volatility * STOP_VOLATILITY_MULTIPLIER;
+  const rawTarget = volatility * TARGET_VOLATILITY_MULTIPLIER;
+
+  const stopPct = Math.min(MAX_STOP_PCT, Math.max(MIN_STOP_PCT, rawStop));
+  const targetPct = Math.min(MAX_TARGET_PCT, Math.max(MIN_TARGET_PCT, rawTarget));
+
+  return { stopPct, targetPct };
 }
 
 // ============ SIGNAL ENGINE ============
@@ -234,11 +260,16 @@ export function runTradingCycle(state, closes, currentPrice, closes1h = null) {
 
   // Fermeture de position existante
   if (openPosition) {
+    // Utilise le stop/target figés à l'ouverture (stockés sur la position), avec fallback
+    // sur les anciens seuils fixes si jamais absents (positions ouvertes avant cette mise à jour).
+    const stopPct = openPosition.stopPct ?? 0.008;
+    const targetPct = openPosition.targetPct ?? 0.015;
+
     const pnlPct = openPosition.direction === 'BUY'
       ? (currentPrice - openPosition.entryPrice) / openPosition.entryPrice
       : (openPosition.entryPrice - currentPrice) / openPosition.entryPrice;
 
-    const shouldClose = pnlPct >= 0.015 || pnlPct <= -0.008 || signal.direction !== openPosition.direction;
+    const shouldClose = pnlPct >= targetPct || pnlPct <= -stopPct || signal.direction !== openPosition.direction;
 
     if (shouldClose) {
       const pnl = openPosition.positionSize * pnlPct;
@@ -249,7 +280,7 @@ export function runTradingCycle(state, closes, currentPrice, closes1h = null) {
         pnl,
         pnlPct,
         closedAt: Date.now(),
-        closeReason: pnlPct >= 0.015 ? 'target' : pnlPct <= -0.008 ? 'stop' : 'signal_reversal'
+        closeReason: pnlPct >= targetPct ? 'target' : pnlPct <= -stopPct ? 'stop' : 'signal_reversal'
       };
       newTrades = trades.map(t => t.id === openPosition.id ? closedTrade : t);
       newAccount = { balance: account.balance + pnl, equity: account.balance + pnl };
@@ -279,6 +310,10 @@ export function runTradingCycle(state, closes, currentPrice, closes1h = null) {
     const basePositionSize = account.balance * RISK_PER_TRADE * (1 / 0.008);
     const positionSize = Math.min(basePositionSize * sizeMultiplier, account.balance * 0.5);
 
+    // Stop et target calculés une fois à l'ouverture à partir de la volatilité du moment,
+    // puis figés dans le trade pour toute sa durée de vie (pas de recalcul en cours de route).
+    const { stopPct, targetPct } = calcDynamicStopTarget(signal.volatility);
+
     const newTrade = {
       id: Date.now(),
       direction: signal.direction,
@@ -288,7 +323,10 @@ export function runTradingCycle(state, closes, currentPrice, closes1h = null) {
       confidence: signal.confidence,
       reasons: signal.reasons,
       status: 'open',
-      openedAt: Date.now()
+      openedAt: Date.now(),
+      volatilityAtEntry: signal.volatility,
+      stopPct,
+      targetPct
     };
     newTrades = [...trades, newTrade];
     newOpenPosition = newTrade;
