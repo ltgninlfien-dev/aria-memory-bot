@@ -19,11 +19,11 @@ async function loadState(redis, forceResetParams) {
   const state = await redis.get(STATE_KEY);
   if (state && !forceResetParams) return state;
   if (state && forceResetParams) {
-    return { ...state, params: { rsiOverbought: 70, rsiOversold: 30, confidenceThreshold: 0.45 } };
+    return { ...state, params: { rsiOverbought: 70, rsiOversold: 30, confidenceThreshold: 0.4 } };
   }
   return {
     trades: [],
-    params: { rsiOverbought: 70, rsiOversold: 30, confidenceThreshold: 0.45 },
+    params: { rsiOverbought: 70, rsiOversold: 30, confidenceThreshold: 0.4 },
     account: { balance: STARTING_CAPITAL, equity: STARTING_CAPITAL },
     openPosition: null,
     lastSignal: null,
