@@ -54,7 +54,7 @@ export async function GET(request) {
     const state = await loadState(redis, resetParams);
 
     const marketRes = await fetch(
-      `https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=5min&outputsize=50&apikey=${apiKey}`,
+      `https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=5min&outputsize=60&apikey=${apiKey}`,
       { cache: 'no-store' }
     );
     const marketData = await marketRes.json();
@@ -66,7 +66,22 @@ export async function GET(request) {
     const closes = marketData.values.map(v => parseFloat(v.close)).reverse();
     const currentPrice = closes[closes.length - 1];
 
-    const newState = runTradingCycle(state, closes, currentPrice);
+    // Données 1h pour la confirmation multi-timeframe (best-effort : si ça échoue, on continue sans)
+    let closes1h = null;
+    try {
+      const market1hRes = await fetch(
+        `https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=1h&outputsize=30&apikey=${apiKey}`,
+        { cache: 'no-store' }
+      );
+      const market1hData = await market1hRes.json();
+      if (market1hData.values) {
+        closes1h = market1hData.values.map(v => parseFloat(v.close)).reverse();
+      }
+    } catch {
+      // Pas bloquant : le signal fonctionnera sans confirmation 1h
+    }
+
+    const newState = runTradingCycle(state, closes, currentPrice, closes1h);
     await saveState(redis, newState);
 
     return Response.json({
