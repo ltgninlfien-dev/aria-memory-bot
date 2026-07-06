@@ -10,6 +10,10 @@ export const MAX_CONSECUTIVE_LOSSES = 3;
 export const CONSECUTIVE_LOSS_PAUSE_MS = 2 * 60 * 60 * 1000;
 export const POSITION_SIZE_REDUCTION_AFTER_LOSS = 0.25;
 
+// ============ QUALITY FILTERS CONSTANTS ============
+export const TREND_SMA_PERIOD = 50; // moyenne mobile pour détecter la tendance de fond
+export const MIN_VOLATILITY = 0.0003; // en dessous, le marché est jugé trop calme pour trader fiablement
+
 // ============ INDICATOR MATH ============
 export function calcRSI(closes, period = 14) {
   if (closes.length < period + 1) return null;
@@ -55,11 +59,35 @@ export function calcBollinger(closes, period = 20, mult = 2) {
   return { upper: mean + mult * sd, mid: mean, lower: mean - mult * sd };
 }
 
+// Moyenne mobile simple — utilisée pour détecter la tendance de fond
+export function calcSMA(closes, period) {
+  if (closes.length < period) return null;
+  const slice = closes.slice(-period);
+  return slice.reduce((a, b) => a + b, 0) / period;
+}
+
+// ATR simplifié à partir des seules clôtures (proxy de volatilité quand on n'a pas high/low)
+// Mesure la variation moyenne absolue entre bougies successives sur la période.
+export function calcVolatility(closes, period = 14) {
+  if (closes.length < period + 1) return null;
+  const recent = closes.slice(-period - 1);
+  let sumAbsDiff = 0;
+  for (let i = 1; i < recent.length; i++) {
+    sumAbsDiff += Math.abs(recent[i] - recent[i - 1]);
+  }
+  const avgMove = sumAbsDiff / period;
+  const avgPrice = recent.reduce((a, b) => a + b, 0) / recent.length;
+  return avgMove / avgPrice; // volatilité relative, ex: 0.001 = 0.1% de mouvement moyen par bougie
+}
+
 // ============ SIGNAL ENGINE ============
-export function generateSignal(closes, params) {
+// closes1h est optionnel : si fourni, active la confirmation multi-timeframe.
+export function generateSignal(closes, params, closes1h = null) {
   const rsi = calcRSI(closes);
   const macd = calcMACD(closes);
   const boll = calcBollinger(closes);
+  const sma = calcSMA(closes, TREND_SMA_PERIOD);
+  const volatility = calcVolatility(closes);
   if (rsi === null || !macd || !boll) return null;
 
   const price = closes[closes.length - 1];
@@ -73,10 +101,50 @@ export function generateSignal(closes, params) {
   if (price < boll.lower) { score += 1; reasons.push('Prix sous bande de Bollinger basse'); }
   if (price > boll.upper) { score -= 1; reasons.push('Prix au-dessus bande de Bollinger haute'); }
 
-  const confidence = Math.abs(score) / 3;
-  const direction = score > 0 ? 'BUY' : score < 0 ? 'SELL' : 'NEUTRAL';
+  let confidence = Math.abs(score) / 3;
+  let direction = score > 0 ? 'BUY' : score < 0 ? 'SELL' : 'NEUTRAL';
 
-  return { direction, confidence, score, rsi, macd, boll, price, reasons, timestamp: Date.now() };
+  // === FILTRE 1 : Tendance de fond (SMA 50) ===
+  // On ne prend un BUY que si le prix est au-dessus de la tendance, un SELL que si en dessous.
+  // Sinon, on ne bloque pas complètement mais on pénalise fortement la confiance.
+  if (sma !== null && direction !== 'NEUTRAL') {
+    const alignedWithTrend = (direction === 'BUY' && price > sma) || (direction === 'SELL' && price < sma);
+    if (!alignedWithTrend) {
+      reasons.push('Contre la tendance de fond (SMA50) — confiance réduite');
+      confidence *= 0.4;
+    } else {
+      reasons.push('Aligné avec la tendance de fond (SMA50)');
+    }
+  }
+
+  // === FILTRE 2 : Volatilité minimum ===
+  // Si le marché est trop calme, les indicateurs sont peu fiables : on annule le signal.
+  if (volatility !== null && volatility < MIN_VOLATILITY && direction !== 'NEUTRAL') {
+    reasons.push(`Volatilité trop faible (${(volatility * 100).toFixed(3)}%) — signal ignoré`);
+    direction = 'NEUTRAL';
+    confidence = 0;
+  }
+
+  // === FILTRE 3 : Confirmation multi-timeframe (1h) ===
+  // Si on a les données 1h, le signal 1h doit aller dans le même sens, sinon confiance réduite.
+  if (closes1h && closes1h.length >= 26 && direction !== 'NEUTRAL') {
+    const macd1h = calcMACD(closes1h);
+    const rsi1h = calcRSI(closes1h);
+    if (macd1h && rsi1h !== null) {
+      const trend1hUp = macd1h.histogram > 0 && rsi1h > 45;
+      const trend1hDown = macd1h.histogram < 0 && rsi1h < 55;
+      const confirmed = (direction === 'BUY' && trend1hUp) || (direction === 'SELL' && trend1hDown);
+      if (confirmed) {
+        reasons.push('Confirmé par le timeframe 1h');
+        confidence = Math.min(1, confidence * 1.3);
+      } else {
+        reasons.push('Non confirmé par le timeframe 1h — confiance réduite');
+        confidence *= 0.5;
+      }
+    }
+  }
+
+  return { direction, confidence, score, rsi, macd, boll, sma, volatility, price, reasons, timestamp: Date.now() };
 }
 
 // ============ LEARNING ENGINE ============
@@ -150,10 +218,10 @@ export function getPositionSizeMultiplier(trades) {
 }
 
 // ============ MAIN DECISION FUNCTION ============
-// Prend l'état actuel + les derniers prix, retourne le nouvel état après décision.
-export function runTradingCycle(state, closes, currentPrice) {
+// Prend l'état actuel + les derniers prix (5min et 1h), retourne le nouvel état après décision.
+export function runTradingCycle(state, closes, currentPrice, closes1h = null) {
   const { trades, params, account, openPosition } = state;
-  const signal = generateSignal(closes, params);
+  const signal = generateSignal(closes, params, closes1h);
 
   if (!signal) {
     return { ...state, lastSignal: null, lastCheckedAt: Date.now() };
