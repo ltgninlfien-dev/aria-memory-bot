@@ -14,6 +14,74 @@ export const MAX_JUDGMENT_LOG_SIZE = 300; // nombre max d'entrées conservées d
 // ============ QUALITY FILTERS CONSTANTS ============
 export const TREND_SMA_PERIOD = 50; // moyenne mobile pour détecter la tendance de fond
 export const MIN_VOLATILITY = 0.0003; // en dessous, le marché est jugé trop calme pour trader fiablement
+export const MIN_VOLATILITY_FOR_MACD_SIGNAL = 0.0007; // à calibrer sur l'historique
+export const REVERSAL_CONFIDENCE_MIN = 0.35; // confiance minimum pour qu'un retournement soit pris en compte
+
+// Neutralise un signal si MACD et Bollinger se contredisent (probable épuisement de mouvement)
+function checkIndicatorCoherence(signal, boll, price) {
+  const macdBullish = signal.reasons.some(r => r.includes('MACD haussier'));
+  const macdBearish = signal.reasons.some(r => r.includes('MACD baissier'));
+  const priceAboveUpperBand = price > boll.upper;
+  const priceBelowLowerBand = price < boll.lower;
+
+  const contradiction = (macdBullish && priceAboveUpperBand) || (macdBearish && priceBelowLowerBand);
+
+  if (contradiction) {
+    return {
+      ...signal,
+      direction: 'NEUTRAL',
+      confidence: 0,
+      reasons: [...signal.reasons, 'Contradiction Bollinger/MACD — signal neutralisé']
+    };
+  }
+  return signal;
+}
+
+// Pénalise un signal porté uniquement par MACD (sans RSI) si la volatilité est trop faible
+function adjustConfidenceForVolatility(signal, volatilityAtEntry) {
+  const macdOnlyReasons = signal.reasons.some(r => r.includes('MACD'))
+    && !signal.reasons.some(r => r.includes('RSI'));
+
+  if (macdOnlyReasons && volatilityAtEntry !== null && volatilityAtEntry < MIN_VOLATILITY_FOR_MACD_SIGNAL) {
+    return {
+      ...signal,
+      confidence: signal.confidence * 0.5,
+      reasons: [...signal.reasons, 'Volatilité faible — confiance réduite']
+    };
+  }
+  return signal;
+}
+
+// Détermine si un retournement de signal doit fermer la position, en exigeant
+// une confirmation sur 2 cycles consécutifs (pas juste un signal isolé).
+function shouldCloseOnReversal(currentSignal, openPosition, state) {
+  const isOpposite = currentSignal.direction !== openPosition.direction
+    && currentSignal.direction !== 'NEUTRAL';
+
+  if (!isOpposite) {
+    return { close: false, newPendingReversal: null };
+  }
+
+  if (currentSignal.confidence < REVERSAL_CONFIDENCE_MIN) {
+    // Signal contraire trop faible pour même commencer à compter
+    return { close: false, newPendingReversal: null };
+  }
+
+  const pending = state.pendingReversal;
+
+  if (!pending || pending.direction !== currentSignal.direction) {
+    return {
+      close: false,
+      newPendingReversal: {
+        direction: currentSignal.direction,
+        firstSeenAt: Date.now(),
+        confidence: currentSignal.confidence
+      }
+    };
+  }
+
+  return { close: true, newPendingReversal: null };
+}
 
 // ============ INDICATOR MATH ============
 export function calcRSI(closes, period = 14) {
@@ -145,7 +213,15 @@ export function generateSignal(closes, params, closes1h = null) {
     }
   }
 
-  return { direction, confidence, score, rsi, macd, boll, sma, volatility, price, reasons, timestamp: Date.now() };
+  // === FILTRE 4 : Cohérence Bollinger/MACD ===
+  // Neutralise le signal si MACD et Bollinger se contredisent (probable épuisement de mouvement).
+  let result = { direction, confidence, score, rsi, macd, boll, sma, volatility, price, reasons, timestamp: Date.now() };
+  result = checkIndicatorCoherence(result, boll, price);
+
+  // === FILTRE 5 : Pénalité MACD seul en régime calme ===
+  result = adjustConfidenceForVolatility(result, volatility);
+
+  return result;
 }
 
 // ============ LEARNING ENGINE ============
@@ -255,7 +331,9 @@ export function runTradingCycle(state, closes, currentPrice, closes1h = null) {
       ? (currentPrice - openPosition.entryPrice) / openPosition.entryPrice
       : (openPosition.entryPrice - currentPrice) / openPosition.entryPrice;
 
-    const shouldClose = pnlPct >= 0.015 || pnlPct <= -0.008 || signal.direction !== openPosition.direction;
+    const targetOrStopHit = pnlPct >= 0.015 || pnlPct <= -0.008;
+    const reversalCheck = shouldCloseOnReversal(signal, openPosition, state);
+    const shouldClose = targetOrStopHit || reversalCheck.close;
 
     if (shouldClose) {
       const pnl = openPosition.positionSize * pnlPct;
@@ -280,7 +358,19 @@ export function runTradingCycle(state, closes, currentPrice, closes1h = null) {
         openPosition: newOpenPosition,
         params: newParams,
         lastSignal: signal,
+        pendingReversal: null,
         judgmentLog: logJudgment(judgmentLog, signal, 'closed'),
+        lastCheckedAt: Date.now()
+      };
+    }
+
+    // Position toujours ouverte : on met à jour le compteur de retournement en attente
+    if (!targetOrStopHit && reversalCheck.newPendingReversal !== state.pendingReversal) {
+      return {
+        ...state,
+        lastSignal: signal,
+        pendingReversal: reversalCheck.newPendingReversal,
+        judgmentLog: logJudgment(judgmentLog, signal, 'held'),
         lastCheckedAt: Date.now()
       };
     }
@@ -323,6 +413,7 @@ export function runTradingCycle(state, closes, currentPrice, closes1h = null) {
       openPosition: newOpenPosition,
       lastSignal: signal,
       riskPauseReason: null,
+      pendingReversal: null,
       judgmentLog: logJudgment(judgmentLog, signal, 'opened'),
       lastCheckedAt: Date.now()
     };
