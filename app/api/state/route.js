@@ -1,10 +1,11 @@
-// app/api/state-eurusd/route.js
-// Route de LECTURE pour le bot EUR/USD, indépendante de celle de XAU/USD.
+// app/api/state/route.js
+// Route de LECTURE utilisée par l'interface web pour afficher l'état géré par le cron serveur.
+// L'interface ne fait plus de trading elle-même — elle affiche ce que le cron a décidé.
 
 import { Redis } from '@upstash/redis';
 import { STARTING_CAPITAL } from '../../lib/tradingEngine';
 
-const STATE_KEY = 'aria-bot-state-eurusd';
+const STATE_KEY = 'aria-bot-state';
 
 function getRedis() {
   return new Redis({
@@ -27,7 +28,7 @@ export async function GET() {
       lastSignal: null,
       riskPauseReason: null,
       lastCheckedAt: null,
-      notice: 'Aucune donnée encore — le cron EUR/USD n\'a pas encore tourné.'
+      notice: 'Aucune donnée encore — le cron serveur n\'a pas encore tourné.'
     });
   } catch (err) {
     return Response.json({ error: err.message }, { status: 500 });
