@@ -13,6 +13,7 @@
     "react-dom": "^18",
     "recharts": "^2.12.7",
     "lucide-react": "^0.383.0",
-    "@upstash/redis": "^1.34.3"
+    "@upstash/redis": "^1.34.3",
+    "resend": "^4.0.1"
   }
 }
