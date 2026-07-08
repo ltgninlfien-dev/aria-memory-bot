@@ -1,5 +1,5 @@
-import TradingBot from '../components/TradingBot';
+import TradingBot from './components/TradingBot';
 
-export default function EurUsdPage() {
-  return <TradingBot apiPath="/api/state-eurusd" symbolLabel="EUR/USD" />;
+export default function Home() {
+  return <TradingBot />;
 }
