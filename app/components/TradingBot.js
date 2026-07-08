@@ -4,9 +4,8 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { TrendingUp, TrendingDown, Brain, Activity, AlertTriangle, Target, History, Zap, Download, Upload, RefreshCw, Server } from 'lucide-react';
 
 const STARTING_CAPITAL = 10000;
-const REFRESH_INTERVAL = 30000; // rafraîchit l'affichage toutes les 30s (lecture seule, pas de trading ici)
+const REFRESH_INTERVAL = 30000;
 
-// ============ EXPORT / IMPORT ============
 function exportMemoryToFile(state) {
   const payload = { ...state, exportedAt: new Date().toISOString(), version: 2 };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -21,10 +20,8 @@ function exportMemoryToFile(state) {
   URL.revokeObjectURL(url);
 }
 
-// ============ MAIN COMPONENT (dashboard de lecture) ============
-export default function TradingBot() {
+export default function TradingBot({ apiPath = '/api/state', symbolLabel = 'XAU/USD' }) {
   const [state, setState] = useState(null);
-  const [priceHistory, setPriceHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState('live');
@@ -34,7 +31,7 @@ export default function TradingBot() {
 
   const fetchState = useCallback(async () => {
     try {
-      const res = await fetch('/api/state', { cache: 'no-store' });
+      const res = await fetch(apiPath, { cache: 'no-store' });
       const data = await res.json();
       setState(data);
       setError(null);
@@ -43,7 +40,7 @@ export default function TradingBot() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [apiPath]);
 
   useEffect(() => {
     fetchState();
@@ -63,7 +60,7 @@ export default function TradingBot() {
   const handleFileSelected = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setImportMessage({ type: 'error', text: "L'import n'est plus disponible depuis cette interface : la mémoire est maintenant gérée par le serveur. Contacte-moi si tu as besoin de restaurer une sauvegarde." });
+    setImportMessage({ type: 'error', text: "L'import n'est plus disponible depuis cette interface : la mémoire est gérée par le serveur." });
     setTimeout(() => setImportMessage(null), 6000);
     e.target.value = '';
   };
@@ -78,11 +75,12 @@ export default function TradingBot() {
 
   const trades = state?.trades || [];
   const account = state?.account || { balance: STARTING_CAPITAL };
-  const params = state?.params || { rsiOverbought: 70, rsiOversold: 30, confidenceThreshold: 0.6 };
+  const params = state?.params || { rsiOverbought: 70, rsiOversold: 30, confidenceThreshold: 0.4 };
   const openPosition = state?.openPosition || null;
   const lastSignal = state?.lastSignal || null;
   const riskPauseReason = state?.riskPauseReason || null;
   const lastCheckedAt = state?.lastCheckedAt || null;
+  const priceHistory = state?.priceHistory || [];
 
   const closedTrades = trades.filter(t => t.status === 'closed');
   const winRate = closedTrades.length > 0 ? (closedTrades.filter(t => t.pnl > 0).length / closedTrades.length * 100).toFixed(1) : '—';
@@ -106,7 +104,6 @@ export default function TradingBot() {
         button:focus-visible, input:focus-visible { outline: 2px solid #d4a843; outline-offset: 2px; }
       `}</style>
 
-      {/* HEADER */}
       <div style={{ borderBottom: '1px solid #1f2733', padding: '20px 28px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
           <div style={{ width: 38, height: 38, borderRadius: 8, background: 'linear-gradient(135deg, #d4a843, #8a6d1f)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -114,7 +111,7 @@ export default function TradingBot() {
           </div>
           <div>
             <div className="label-font" style={{ fontSize: 17, fontWeight: 700, letterSpacing: 0.3 }}>ARIA <span style={{ color: '#d4a843' }}>MEMORY</span></div>
-            <div className="label-font" style={{ fontSize: 11, color: '#6b7685', letterSpacing: 1 }}>XAU/USD &middot; SERVEUR AUTONOME</div>
+            <div className="label-font" style={{ fontSize: 11, color: '#6b7685', letterSpacing: 1 }}>{symbolLabel} &middot; SERVEUR AUTONOME</div>
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -150,7 +147,6 @@ export default function TradingBot() {
           </div>
         )}
 
-        {/* TABS */}
         <div style={{ display: 'flex', gap: 4, background: '#10151f', border: '1px solid #1f2733', borderRadius: 8, padding: 4, marginBottom: 20, width: 'fit-content' }}>
           {['live', 'memoire', 'historique'].map(tab => (
             <button key={tab} onClick={() => setActiveTab(tab)}
@@ -160,7 +156,6 @@ export default function TradingBot() {
           ))}
         </div>
 
-        {/* STATS ROW */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 24 }}>
           <StatCard label="Capital" value={`$${account.balance.toFixed(2)}`} accent={account.balance >= STARTING_CAPITAL ? '#4ade80' : '#d4574a'} />
           <StatCard label="P&L Total" value={`${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`} accent={totalPnl >= 0 ? '#4ade80' : '#d4574a'} />
@@ -170,45 +165,63 @@ export default function TradingBot() {
         </div>
 
         {activeTab === 'live' && (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-            <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 12, padding: 20 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
-                <Zap size={15} color="#d4a843" />
-                <span className="label-font" style={{ fontSize: 12, color: '#6b7685', letterSpacing: 0.5 }}>DERNIER SIGNAL (serveur)</span>
+          <>
+            {priceHistory.length > 0 && (
+              <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 12, padding: 20, marginBottom: 20 }}>
+                <div className="label-font" style={{ fontSize: 12, color: '#6b7685', marginBottom: 14, letterSpacing: 0.5 }}>{symbolLabel} &middot; 5 MIN (dernier cycle serveur)</div>
+                <ResponsiveContainer width="100%" height={240}>
+                  <LineChart data={priceHistory}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#1f2733" />
+                    <XAxis dataKey="time" stroke="#4a5568" fontSize={10} tick={{ fill: '#6b7685' }} />
+                    <YAxis domain={['auto', 'auto']} stroke="#4a5568" fontSize={10} tick={{ fill: '#6b7685' }} />
+                    <Tooltip contentStyle={{ background: '#0a0e14', border: '1px solid #2a3441', borderRadius: 8, fontSize: 12 }} />
+                    <Line type="monotone" dataKey="price" stroke="#d4a843" strokeWidth={2} dot={false} />
+                    {openPosition && <ReferenceLine y={openPosition.entryPrice} stroke="#4a90d9" strokeDasharray="4 4" label={{ value: 'Entrée', fill: '#4a90d9', fontSize: 10 }} />}
+                  </LineChart>
+                </ResponsiveContainer>
               </div>
-              {lastSignal ? (
-                <>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-                    {lastSignal.direction === 'BUY' ? <TrendingUp color="#4ade80" size={22} /> : lastSignal.direction === 'SELL' ? <TrendingDown color="#d4574a" size={22} /> : <Activity color="#6b7685" size={22} />}
-                    <span style={{ fontSize: 20, fontWeight: 700, color: lastSignal.direction === 'BUY' ? '#4ade80' : lastSignal.direction === 'SELL' ? '#d4574a' : '#9aa3af' }}>
-                      {lastSignal.direction}
-                    </span>
-                    <span className="label-font" style={{ fontSize: 11, color: '#6b7685' }}>conf. {(lastSignal.confidence * 100).toFixed(0)}%</span>
-                  </div>
-                  {lastSignal.reasons?.map((r, i) => (
-                    <div key={i} className="label-font" style={{ fontSize: 12, color: '#9aa3af', padding: '4px 0' }}>&bull; {r}</div>
-                  ))}
-                </>
-              ) : <div className="label-font" style={{ fontSize: 13, color: '#6b7685' }}>Pas encore de signal enregistré.</div>}
-            </div>
+            )}
 
-            <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 12, padding: 20 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
-                <Target size={15} color="#d4a843" />
-                <span className="label-font" style={{ fontSize: 12, color: '#6b7685', letterSpacing: 0.5 }}>POSITION OUVERTE</span>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+              <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 12, padding: 20 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+                  <Zap size={15} color="#d4a843" />
+                  <span className="label-font" style={{ fontSize: 12, color: '#6b7685', letterSpacing: 0.5 }}>DERNIER SIGNAL (serveur)</span>
+                </div>
+                {lastSignal ? (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                      {lastSignal.direction === 'BUY' ? <TrendingUp color="#4ade80" size={22} /> : lastSignal.direction === 'SELL' ? <TrendingDown color="#d4574a" size={22} /> : <Activity color="#6b7685" size={22} />}
+                      <span style={{ fontSize: 20, fontWeight: 700, color: lastSignal.direction === 'BUY' ? '#4ade80' : lastSignal.direction === 'SELL' ? '#d4574a' : '#9aa3af' }}>
+                        {lastSignal.direction}
+                      </span>
+                      <span className="label-font" style={{ fontSize: 11, color: '#6b7685' }}>conf. {(lastSignal.confidence * 100).toFixed(0)}%</span>
+                    </div>
+                    {lastSignal.reasons?.map((r, i) => (
+                      <div key={i} className="label-font" style={{ fontSize: 12, color: '#9aa3af', padding: '4px 0' }}>&bull; {r}</div>
+                    ))}
+                  </>
+                ) : <div className="label-font" style={{ fontSize: 13, color: '#6b7685' }}>Pas encore de signal enregistré.</div>}
               </div>
-              {openPosition ? (
-                <>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
-                    <span style={{ fontSize: 18, fontWeight: 700, color: openPosition.direction === 'BUY' ? '#4ade80' : '#d4574a' }}>{openPosition.direction}</span>
-                    <span className="label-font" style={{ fontSize: 12, color: '#9aa3af' }}>@ ${openPosition.entryPrice.toFixed(2)}</span>
-                  </div>
-                  <div className="label-font" style={{ fontSize: 12, color: '#6b7685' }}>Taille: ${openPosition.positionSize.toFixed(2)}</div>
-                  <div className="label-font" style={{ fontSize: 12, color: '#6b7685' }}>Ouvert: {new Date(openPosition.openedAt).toLocaleString('fr-FR')}</div>
-                </>
-              ) : <div className="label-font" style={{ fontSize: 13, color: '#6b7685' }}>Aucune position. Le serveur attend un signal fiable.</div>}
+
+              <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 12, padding: 20 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+                  <Target size={15} color="#d4a843" />
+                  <span className="label-font" style={{ fontSize: 12, color: '#6b7685', letterSpacing: 0.5 }}>POSITION OUVERTE</span>
+                </div>
+                {openPosition ? (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                      <span style={{ fontSize: 18, fontWeight: 700, color: openPosition.direction === 'BUY' ? '#4ade80' : '#d4574a' }}>{openPosition.direction}</span>
+                      <span className="label-font" style={{ fontSize: 12, color: '#9aa3af' }}>@ ${openPosition.entryPrice.toFixed(2)}</span>
+                    </div>
+                    <div className="label-font" style={{ fontSize: 12, color: '#6b7685' }}>Taille: ${openPosition.positionSize.toFixed(2)}</div>
+                    <div className="label-font" style={{ fontSize: 12, color: '#6b7685' }}>Ouvert: {new Date(openPosition.openedAt).toLocaleString('fr-FR')}</div>
+                  </>
+                ) : <div className="label-font" style={{ fontSize: 13, color: '#6b7685' }}>Aucune position. Le serveur attend un signal fiable.</div>}
+              </div>
             </div>
-          </div>
+          </>
         )}
 
         {activeTab === 'memoire' && (
