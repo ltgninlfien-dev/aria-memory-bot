@@ -1,13 +1,13 @@
-// app/api/cron-eurusd/route.js
-// Bot indépendant pour EUR/USD — même moteur que XAU/USD mais état Redis totalement séparé.
-// Aucune donnée partagée avec le bot XAU/USD : capital, trades et mémoire distincts.
+// app/api/cron/route.js
+// Cette route est appelée périodiquement par un cron externe (cron-job.org).
+// Elle exécute un cycle complet : récupère le prix, calcule le signal, décide, sauvegarde.
+// Protégée par une clé secrète pour éviter les appels non autorisés.
 
 import { Redis } from '@upstash/redis';
 import { Resend } from 'resend';
 import { runTradingCycle, STARTING_CAPITAL } from '../../lib/tradingEngine';
 
-const STATE_KEY = 'aria-bot-state-eurusd';
-const SYMBOL = 'EUR/USD';
+const STATE_KEY = 'aria-bot-state';
 const NOTIFY_EMAIL = process.env.NOTIFY_EMAIL;
 
 function getRedis() {
@@ -36,8 +36,8 @@ async function notifyEvents(prevState, newState) {
   if (!prevState.openPosition && newState.openPosition) {
     const p = newState.openPosition;
     await sendNotification(
-      `🟢 ARIA EUR/USD — Position ${p.direction} ouverte`,
-      `<p><strong>${p.direction}</strong> EUR/USD @ ${p.entryPrice.toFixed(5)}</p>
+      `🟢 ARIA — Position ${p.direction} ouverte`,
+      `<p><strong>${p.direction}</strong> XAU/USD @ $${p.entryPrice.toFixed(2)}</p>
        <p>Taille: $${p.positionSize.toFixed(2)} · Confiance: ${(p.confidence * 100).toFixed(0)}%</p>
        <p>Raisons: ${p.reasons.join(', ')}</p>`
     );
@@ -49,8 +49,8 @@ async function notifyEvents(prevState, newState) {
     const lastClosed = [...newState.trades].filter(t => t.status === 'closed').sort((a, b) => b.closedAt - a.closedAt)[0];
     const emoji = lastClosed.pnl >= 0 ? '✅' : '❌';
     await sendNotification(
-      `${emoji} ARIA EUR/USD — Trade clos : ${lastClosed.pnl >= 0 ? '+' : ''}$${lastClosed.pnl.toFixed(2)}`,
-      `<p><strong>${lastClosed.direction}</strong> @ ${lastClosed.entryPrice.toFixed(5)} → ${lastClosed.exitPrice.toFixed(5)}</p>
+      `${emoji} ARIA — Trade clos : ${lastClosed.pnl >= 0 ? '+' : ''}$${lastClosed.pnl.toFixed(2)}`,
+      `<p><strong>${lastClosed.direction}</strong> @ $${lastClosed.entryPrice.toFixed(2)} → $${lastClosed.exitPrice.toFixed(2)}</p>
        <p>P&L: <strong>${lastClosed.pnl >= 0 ? '+' : ''}$${lastClosed.pnl.toFixed(2)}</strong> (${(lastClosed.pnlPct * 100).toFixed(2)}%)</p>
        <p>Raison de clôture: ${lastClosed.closeReason}</p>
        <p>Capital actuel: $${newState.account.balance.toFixed(2)}</p>`
@@ -97,7 +97,7 @@ export async function GET(request) {
     const state = await loadState(redis, resetParams);
 
     const marketRes = await fetch(
-      `https://api.twelvedata.com/time_series?symbol=${SYMBOL}&interval=5min&outputsize=60&apikey=${apiKey}`,
+      `https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=5min&outputsize=60&apikey=${apiKey}`,
       { cache: 'no-store' }
     );
     const marketData = await marketRes.json();
@@ -112,7 +112,7 @@ export async function GET(request) {
     let closes1h = null;
     try {
       const market1hRes = await fetch(
-        `https://api.twelvedata.com/time_series?symbol=${SYMBOL}&interval=1h&outputsize=30&apikey=${apiKey}`,
+        `https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=1h&outputsize=30&apikey=${apiKey}`,
         { cache: 'no-store' }
       );
       const market1hData = await market1hRes.json();
@@ -134,7 +134,6 @@ export async function GET(request) {
 
     return Response.json({
       ok: true,
-      symbol: SYMBOL,
       checkedAt: new Date().toISOString(),
       signal: newState.lastSignal,
       openPosition: newState.openPosition,
