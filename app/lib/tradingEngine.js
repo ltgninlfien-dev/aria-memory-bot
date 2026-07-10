@@ -17,6 +17,27 @@ export const MIN_VOLATILITY = 0.0003; // en dessous, le marché est jugé trop c
 export const MIN_VOLATILITY_FOR_MACD_SIGNAL = 0.0007; // à calibrer sur l'historique
 export const REVERSAL_CONFIDENCE_MIN = 0.35; // confiance minimum pour qu'un retournement soit pris en compte
 
+// Fenêtre de forte activité XAU/USD : chevauchement Londres/New York, 13h-17h UTC.
+// Pendant cette fenêtre, un mouvement de même ampleur est statistiquement plus fiable
+// (plus de volume, plus de participants institutionnels) qu'en heures creuses.
+export const HIGH_ACTIVITY_START_UTC = 13;
+export const HIGH_ACTIVITY_END_UTC = 17;
+export const HIGH_ACTIVITY_VOLATILITY_FACTOR = 0.6; // seuils assouplis à 60% de leur valeur normale
+
+function isHighActivityWindow(timestamp = Date.now()) {
+  const hourUTC = new Date(timestamp).getUTCHours();
+  return hourUTC >= HIGH_ACTIVITY_START_UTC && hourUTC < HIGH_ACTIVITY_END_UTC;
+}
+
+function getVolatilityThresholds(timestamp = Date.now()) {
+  const highActivity = isHighActivityWindow(timestamp);
+  return {
+    minVolatility: highActivity ? MIN_VOLATILITY * HIGH_ACTIVITY_VOLATILITY_FACTOR : MIN_VOLATILITY,
+    minVolatilityForMacd: highActivity ? MIN_VOLATILITY_FOR_MACD_SIGNAL * HIGH_ACTIVITY_VOLATILITY_FACTOR : MIN_VOLATILITY_FOR_MACD_SIGNAL,
+    highActivity
+  };
+}
+
 // Neutralise un signal si MACD et Bollinger se contredisent (probable épuisement de mouvement)
 function checkIndicatorCoherence(signal, boll, price) {
   const macdBullish = signal.reasons.some(r => r.includes('MACD haussier'));
@@ -37,16 +58,19 @@ function checkIndicatorCoherence(signal, boll, price) {
   return signal;
 }
 
-// Pénalise un signal porté uniquement par MACD (sans RSI) si la volatilité est trop faible
+// Pénalise un signal porté uniquement par MACD (sans RSI) si la volatilité est trop faible,
+// avec un seuil assoupli pendant la fenêtre de forte activité (Londres/New York).
 function adjustConfidenceForVolatility(signal, volatilityAtEntry) {
   const macdOnlyReasons = signal.reasons.some(r => r.includes('MACD'))
     && !signal.reasons.some(r => r.includes('RSI'));
 
-  if (macdOnlyReasons && volatilityAtEntry !== null && volatilityAtEntry < MIN_VOLATILITY_FOR_MACD_SIGNAL) {
+  const { minVolatilityForMacd, highActivity } = getVolatilityThresholds(signal.timestamp);
+
+  if (macdOnlyReasons && volatilityAtEntry !== null && volatilityAtEntry < minVolatilityForMacd) {
     return {
       ...signal,
       confidence: signal.confidence * 0.5,
-      reasons: [...signal.reasons, 'Volatilité faible — confiance réduite']
+      reasons: [...signal.reasons, `Volatilité faible — confiance réduite${highActivity ? ' (seuil assoupli, heure active)' : ''}`]
     };
   }
   return signal;
@@ -188,8 +212,11 @@ export function generateSignal(closes, params, closes1h = null) {
 
   // === FILTRE 2 : Volatilité minimum ===
   // Si le marché est trop calme, les indicateurs sont peu fiables : on annule le signal.
-  if (volatility !== null && volatility < MIN_VOLATILITY && direction !== 'NEUTRAL') {
-    reasons.push(`Volatilité trop faible (${(volatility * 100).toFixed(3)}%) — signal ignoré`);
+  // Seuil assoupli pendant la fenêtre de forte activité (Londres/New York, 13h-17h UTC).
+  const nowTimestamp = Date.now();
+  const { minVolatility, highActivity } = getVolatilityThresholds(nowTimestamp);
+  if (volatility !== null && volatility < minVolatility && direction !== 'NEUTRAL') {
+    reasons.push(`Volatilité trop faible (${(volatility * 100).toFixed(3)}%) — signal ignoré${highActivity ? ' (seuil assoupli, heure active)' : ''}`);
     direction = 'NEUTRAL';
     confidence = 0;
   }
