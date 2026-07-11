@@ -7,17 +7,12 @@ import { calculateScore } from '../../lib/scoreEngine';
 
 const TWELVE_DATA_BASE_URL = 'https://api.twelvedata.com/time_series';
 
+// Clé Twelve Data — codée en dur ici pour rester cohérent avec le pattern déjà utilisé
+// dans cron/route.js et cron-eurusd/route.js (pas de variable d'environnement dédiée pour cette clé)
+const TWELVE_DATA_API_KEY = 'c10b0989d426492f8413f93d0727132c';
+
 async function fetchCandles(symbol, interval, outputsize) {
-  const apiKey = process.env.TWELVE_DATA_API_KEY;
-
-  if (!apiKey) {
-    throw new Error(
-      'TWELVE_DATA_API_KEY manquante dans les variables d\'environnement Vercel. ' +
-      'Vérifie le nom exact de la variable utilisée dans cron/route.js et ajuste ici si besoin.'
-    );
-  }
-
-  const url = `${TWELVE_DATA_BASE_URL}?symbol=${encodeURIComponent(symbol)}&interval=${interval}&outputsize=${outputsize}&apikey=${apiKey}`;
+  const url = `${TWELVE_DATA_BASE_URL}?symbol=${encodeURIComponent(symbol)}&interval=${interval}&outputsize=${outputsize}&apikey=${TWELVE_DATA_API_KEY}`;
 
   const response = await fetch(url);
   const data = await response.json();
