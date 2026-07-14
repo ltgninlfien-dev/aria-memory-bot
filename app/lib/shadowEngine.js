@@ -135,6 +135,8 @@ export function runShadowCycle(state, candles5min, candles1h) {
       positionSize,
       sizeMultiplier,
       score: v2Result.score,
+      entryAdx: v2Result.adx,
+      entryThreshold: v2Result.threshold,
       status: 'open',
       openedAt: Date.now(),
     };
