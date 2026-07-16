@@ -6,6 +6,9 @@ import { TrendingUp, TrendingDown, Brain, Activity, AlertTriangle, Target, Histo
 const STARTING_CAPITAL = 10000;
 const REFRESH_INTERVAL = 30000;
 
+const STOP_LOSS_PCT = 0.008;
+const TAKE_PROFIT_PCT = 0.015;
+
 function exportMemoryToFile(state) {
   const payload = { ...state, exportedAt: new Date().toISOString(), version: 2 };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -18,6 +21,30 @@ function exportMemoryToFile(state) {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+function computeStopsForPosition(position) {
+  if (!position) return { stopLoss: null, takeProfit: null };
+  const { entryPrice, direction } = position;
+  if (direction === 'BUY') {
+    return {
+      stopLoss: entryPrice * (1 - STOP_LOSS_PCT),
+      takeProfit: entryPrice * (1 + TAKE_PROFIT_PCT),
+    };
+  }
+  return {
+    stopLoss: entryPrice * (1 + STOP_LOSS_PCT),
+    takeProfit: entryPrice * (1 - TAKE_PROFIT_PCT),
+  };
+}
+
+function computeLivePnl(position, currentPrice) {
+  if (!position || currentPrice === null || currentPrice === undefined) return null;
+  const pnlPct =
+    position.direction === 'BUY'
+      ? (currentPrice - position.entryPrice) / position.entryPrice
+      : (position.entryPrice - currentPrice) / position.entryPrice;
+  return { pnlPct, pnl: position.positionSize * pnlPct };
 }
 
 export default function TradingBot({ apiPath = '/api/state', symbolLabel = 'XAU/USD' }) {
@@ -92,6 +119,10 @@ export default function TradingBot({ apiPath = '/api/state', symbolLabel = 'XAU/
   }, [{ trade: 0, equity: STARTING_CAPITAL }]);
 
   const minutesSinceCheck = lastCheckedAt ? Math.round((Date.now() - lastCheckedAt) / 60000) : null;
+
+  const currentPrice = priceHistory.length > 0 ? priceHistory[priceHistory.length - 1].price : null;
+  const { stopLoss: posStopLoss, takeProfit: posTakeProfit } = computeStopsForPosition(openPosition);
+  const livePnl = computeLivePnl(openPosition, currentPrice);
 
   return (
     <div style={{ minHeight: '100vh', background: '#0a0e14', color: '#e8e6e1', fontFamily: "'IBM Plex Mono', 'Courier New', monospace" }}>
@@ -177,6 +208,8 @@ export default function TradingBot({ apiPath = '/api/state', symbolLabel = 'XAU/
                     <Tooltip contentStyle={{ background: '#0a0e14', border: '1px solid #2a3441', borderRadius: 8, fontSize: 12 }} />
                     <Line type="monotone" dataKey="price" stroke="#d4a843" strokeWidth={2} dot={false} />
                     {openPosition && <ReferenceLine y={openPosition.entryPrice} stroke="#4a90d9" strokeDasharray="4 4" label={{ value: 'Entrée', fill: '#4a90d9', fontSize: 10 }} />}
+                    {openPosition && posStopLoss !== null && <ReferenceLine y={posStopLoss} stroke="#d4574a" strokeDasharray="4 4" label={{ value: 'SL', fill: '#d4574a', fontSize: 10 }} />}
+                    {openPosition && posTakeProfit !== null && <ReferenceLine y={posTakeProfit} stroke="#4ade80" strokeDasharray="4 4" label={{ value: 'TP', fill: '#4ade80', fontSize: 10 }} />}
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -215,8 +248,30 @@ export default function TradingBot({ apiPath = '/api/state', symbolLabel = 'XAU/
                       <span style={{ fontSize: 18, fontWeight: 700, color: openPosition.direction === 'BUY' ? '#4ade80' : '#d4574a' }}>{openPosition.direction}</span>
                       <span className="label-font" style={{ fontSize: 12, color: '#9aa3af' }}>@ ${openPosition.entryPrice.toFixed(2)}</span>
                     </div>
+                    {livePnl !== null && (
+                      <div style={{ marginBottom: 10 }}>
+                        <span style={{ fontSize: 16, fontWeight: 700, color: livePnl.pnl >= 0 ? '#4ade80' : '#d4574a' }}>
+                          {livePnl.pnl >= 0 ? '+' : ''}${livePnl.pnl.toFixed(2)}
+                        </span>
+                        <span className="label-font" style={{ fontSize: 11, color: '#6b7685', marginLeft: 6 }}>
+                          ({livePnl.pnlPct >= 0 ? '+' : ''}{(livePnl.pnlPct * 100).toFixed(2)}%, non réalisé)
+                        </span>
+                      </div>
+                    )}
                     <div className="label-font" style={{ fontSize: 12, color: '#6b7685' }}>Taille: ${openPosition.positionSize.toFixed(2)}</div>
                     <div className="label-font" style={{ fontSize: 12, color: '#6b7685' }}>Ouvert: {new Date(openPosition.openedAt).toLocaleString('fr-FR')}</div>
+                    {posStopLoss !== null && (
+                      <div style={{ display: 'flex', gap: 16, marginTop: 12, paddingTop: 12, borderTop: '1px solid #1f2733' }}>
+                        <div>
+                          <div className="label-font" style={{ fontSize: 10, color: '#6b7685', textTransform: 'uppercase' }}>Stop-loss</div>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: '#d4574a' }}>${posStopLoss.toFixed(2)}</div>
+                        </div>
+                        <div>
+                          <div className="label-font" style={{ fontSize: 10, color: '#6b7685', textTransform: 'uppercase' }}>Take-profit</div>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: '#4ade80' }}>${posTakeProfit.toFixed(2)}</div>
+                        </div>
+                      </div>
+                    )}
                   </>
                 ) : <div className="label-font" style={{ fontSize: 13, color: '#6b7685' }}>Aucune position. Le serveur attend un signal fiable.</div>}
               </div>
