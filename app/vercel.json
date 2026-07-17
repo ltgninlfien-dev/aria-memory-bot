@@ -1,5 +1,0 @@
-{
-  "crons": [
-    { "path": "/api/cron/daily-predictions", "schedule": "0 6 * * *" }
-  ]
-}
