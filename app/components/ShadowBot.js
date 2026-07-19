@@ -11,6 +11,37 @@ const STATUS_LABELS = {
   trailing_actif: { label: 'Trailing actif', color: '#4ade80' },
 };
 
+// Formate une durée en minutes vers un texte lisible (ex: "2h15", "45min")
+function formatDuration(openedAt, closedAt) {
+  const minutes = Math.round((closedAt - openedAt) / 60000);
+  if (minutes < 60) return `${minutes}min`;
+  const hours = Math.floor(minutes / 60);
+  const rem = minutes % 60;
+  return rem > 0 ? `${hours}h${rem}` : `${hours}h`;
+}
+
+// Génère une interprétation factuelle du trade — basée sur la mécanique connue (raison de
+// clôture, gain/perte), jamais une spéculation sur le marché que le système ne peut pas vérifier.
+function interpretTrade(trade) {
+  const won = trade.pnl >= 0;
+  switch (trade.closeReason) {
+    case 'stop_loss':
+      return won
+        ? "Cas rare : sortie sur stop-loss avec un léger gain — probablement un mouvement de prix entre deux vérifications (cron 30 min)."
+        : "Sortie sur stop-loss fixe (1.5×ATR). Le marché est allé à l'encontre de la position sans jamais atteindre le seuil de break-even (+1×ATR). Leçon : ce trade n'a montré aucun signe de traction favorable dès le départ.";
+    case 'breakeven_stop':
+      return Math.abs(trade.pnl) < 1
+        ? "Position sortie proche de l'équilibre : le trade est parti en profit, le stop a été remonté à l'entrée, puis le marché s'est retourné. Le capital a été protégé comme prévu."
+        : `Sortie au break-even avec un écart de $${trade.pnl.toFixed(2)} — signe probable d'un léger décalage d'exécution dû à la vérification toutes les 30 minutes plutôt qu'en continu.`;
+    case 'trailing_stop':
+      return won
+        ? "Gain sécurisé par le trailing stop après un mouvement favorable prolongé. Le take-profit fixe aurait pu couper le gain plus tôt ou plus tard selon le cas — ici le trailing a mieux suivi le mouvement."
+        : "Le trailing s'était activé (trade en profit à un moment) mais le marché s'est retourné plus vite que le stop ne pouvait suivre. Leçon : un trailing à 1.5×ATR peut encore laisser une perte modérée si le retournement est brutal.";
+    default:
+      return "Raison de clôture non reconnue.";
+  }
+}
+
 export default function ShadowBot({ symbol = 'XAU/USD' }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -193,13 +224,23 @@ export default function ShadowBot({ symbol = 'XAU/USD' }) {
             <div className="label-font" style={{ padding: 24, fontSize: 13, color: '#6b7685' }}>Aucun trade clos pour l'instant.</div>
           ) : (
             recentClosedTrades.map(t => (
-              <div key={t.id} style={{ padding: '12px 20px', borderBottom: '1px solid #161c26', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: t.direction === 'BUY' ? '#4ade80' : '#d4574a' }}>{t.direction}</span>
-                  <span className="label-font" style={{ fontSize: 12, color: '#9aa3af' }}>@ ${t.entryPrice.toFixed(2)} → ${t.exitPrice.toFixed(2)}</span>
-                  <span className="label-font" style={{ fontSize: 10, color: '#6b7685', padding: '2px 6px', background: '#0a0e14', borderRadius: 4 }}>{t.closeReason}</span>
+              <div key={t.id} style={{ padding: '14px 20px', borderBottom: '1px solid #161c26' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 6 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: t.direction === 'BUY' ? '#4ade80' : '#d4574a' }}>{t.direction}</span>
+                    <span className="label-font" style={{ fontSize: 12, color: '#9aa3af' }}>@ ${t.entryPrice.toFixed(2)} → ${t.exitPrice.toFixed(2)}</span>
+                    <span className="label-font" style={{ fontSize: 10, color: '#6b7685', padding: '2px 6px', background: '#0a0e14', borderRadius: 4 }}>{t.closeReason}</span>
+                  </div>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: t.pnl >= 0 ? '#4ade80' : '#d4574a' }}>{t.pnl >= 0 ? '+' : ''}${t.pnl.toFixed(2)}</span>
                 </div>
-                <span style={{ fontSize: 13, fontWeight: 600, color: t.pnl >= 0 ? '#4ade80' : '#d4574a' }}>{t.pnl >= 0 ? '+' : ''}${t.pnl.toFixed(2)}</span>
+                {t.openedAt && t.closedAt && (
+                  <div className="label-font" style={{ fontSize: 11, color: '#6b7685', marginBottom: 6 }}>
+                    Ouvert le {new Date(t.openedAt).toLocaleString('fr-FR')} &middot; Fermé le {new Date(t.closedAt).toLocaleString('fr-FR')} &middot; Durée : {formatDuration(t.openedAt, t.closedAt)}
+                  </div>
+                )}
+                <div className="label-font" style={{ fontSize: 12, color: '#9aa3af', lineHeight: 1.5, fontStyle: 'italic' }}>
+                  {interpretTrade(t)}
+                </div>
               </div>
             ))
           )}
