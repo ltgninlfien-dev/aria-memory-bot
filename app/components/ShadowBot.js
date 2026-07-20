@@ -37,6 +37,10 @@ function interpretTrade(trade) {
       return won
         ? "Gain sécurisé par le trailing stop après un mouvement favorable prolongé. Le take-profit fixe aurait pu couper le gain plus tôt ou plus tard selon le cas — ici le trailing a mieux suivi le mouvement."
         : "Le trailing s'était activé (trade en profit à un moment) mais le marché s'est retourné plus vite que le stop ne pouvait suivre. Leçon : un trailing à 1.5×ATR peut encore laisser une perte modérée si le retournement est brutal.";
+    case 'manual_close':
+      return won
+        ? "Fermé manuellement en profit — décision humaine plutôt qu'un mécanisme automatique. Utile pour comparer plus tard si sortir plus tôt aurait été préférable au trailing."
+        : "Fermé manuellement en perte — décision humaine plutôt qu'un mécanisme automatique.";
     default:
       return "Raison de clôture non reconnue.";
   }
@@ -46,6 +50,7 @@ export default function ShadowBot({ symbol = 'XAU/USD' }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [closing, setClosing] = useState(false);
   const intervalRef = useRef(null);
 
   const fetchData = useCallback(async () => {
@@ -60,6 +65,31 @@ export default function ShadowBot({ symbol = 'XAU/USD' }) {
       setLoading(false);
     }
   }, [symbol]);
+
+  const handleManualClose = async () => {
+    const confirmed = window.confirm(
+      `Fermer maintenant la position shadow ${symbol} ? Cette action est définitive.`
+    );
+    if (!confirmed) return;
+
+    setClosing(true);
+    try {
+      const res = await fetch(
+        `/api/shadow-close?symbol=${encodeURIComponent(symbol)}&secret=c10b0989d426492f8413f93d0727132c`,
+        { method: 'POST' }
+      );
+      const json = await res.json();
+      if (!res.ok) {
+        alert(`Erreur : ${json.error}`);
+      } else {
+        await fetchData();
+      }
+    } catch (e) {
+      alert('Erreur lors de la fermeture : ' + e.message);
+    } finally {
+      setClosing(false);
+    }
+  };
 
   useEffect(() => {
     fetchData();
@@ -78,6 +108,7 @@ export default function ShadowBot({ symbol = 'XAU/USD' }) {
   const priceHistory = data?.priceHistory || [];
   const openPosition = data?.openPosition || null;
   const positionStatus = data?.positionStatus || null;
+  const equityCurve = data?.equityCurve || [];
   const recentClosedTrades = data?.recentClosedTrades || [];
   const balance = data?.balance;
 
@@ -157,6 +188,22 @@ export default function ShadowBot({ symbol = 'XAU/USD' }) {
           </div>
         )}
 
+        {equityCurve.length > 1 && (
+          <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 12, padding: 20, marginBottom: 20 }}>
+            <div className="label-font" style={{ fontSize: 12, color: '#6b7685', marginBottom: 14, letterSpacing: 0.5 }}>COURBE DE CAPITAL SHADOW</div>
+            <ResponsiveContainer width="100%" height={180}>
+              <LineChart data={equityCurve}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1f2733" />
+                <XAxis dataKey="trade" stroke="#4a5568" fontSize={10} tick={{ fill: '#6b7685' }} />
+                <YAxis stroke="#4a5568" fontSize={10} tick={{ fill: '#6b7685' }} domain={['auto', 'auto']} />
+                <Tooltip contentStyle={{ background: '#0a0e14', border: '1px solid #2a3441', borderRadius: 8, fontSize: 12 }} />
+                <ReferenceLine y={10000} stroke="#4a5568" strokeDasharray="4 4" label={{ value: 'Départ', fill: '#6b7685', fontSize: 10 }} />
+                <Line type="monotone" dataKey="equity" stroke="#9d7ad4" strokeWidth={2} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+
         <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 12, padding: 20, marginBottom: 20 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
             <Target size={15} color="#9d7ad4" />
@@ -210,6 +257,26 @@ export default function ShadowBot({ symbol = 'XAU/USD' }) {
                   </div>
                 )}
               </div>
+
+              <button
+                onClick={handleManualClose}
+                disabled={closing}
+                style={{
+                  marginTop: 16,
+                  width: '100%',
+                  padding: '10px 16px',
+                  background: closing ? '#1f2733' : '#2a1318',
+                  border: '1px solid #4a2229',
+                  borderRadius: 8,
+                  color: closing ? '#6b7685' : '#e8a8a8',
+                  fontFamily: 'IBM Plex Sans, sans-serif',
+                  fontWeight: 600,
+                  fontSize: 12,
+                  cursor: closing ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {closing ? 'Fermeture en cours...' : 'Fermer maintenant (sortie manuelle)'}
+              </button>
             </>
           ) : (
             <div className="label-font" style={{ fontSize: 13, color: '#6b7685' }}>Aucune position shadow. En attente d'un signal V2 fiable.</div>
