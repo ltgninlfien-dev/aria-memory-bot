@@ -14,6 +14,8 @@ const redis = new Redis({
 const TWELVE_DATA_API_KEY = 'c10b0989d426492f8413f93d0727132c';
 const TWELVE_DATA_BASE_URL = 'https://api.twelvedata.com/time_series';
 
+const STARTING_CAPITAL = 10000;
+
 function redisKeyForSymbol(symbol) {
   const slug = symbol.replace('/', '').toLowerCase();
   return `aria-bot-shadow-${slug}`;
@@ -48,6 +50,21 @@ export async function GET(request) {
     const trades = shadowState?.trades || [];
     const balance = shadowState?.account?.balance ?? null;
 
+    // Courbe de capital : calculée à partir de tout l'historique des trades clos,
+    // triés chronologiquement, en partant du capital de départ.
+    const closedTradesSorted = trades
+      .filter(t => t.status === 'closed')
+      .sort((a, b) => a.closedAt - b.closedAt);
+
+    const equityCurve = closedTradesSorted.reduce(
+      (acc, t) => {
+        const last = acc.length > 0 ? acc[acc.length - 1].equity : STARTING_CAPITAL;
+        acc.push({ trade: acc.length + 1, equity: Math.round((last + t.pnl) * 100) / 100 });
+        return acc;
+      },
+      [{ trade: 0, equity: STARTING_CAPITAL }]
+    );
+
     // Statut lisible de la position, pour affichage direct sans logique côté client
     let positionStatus = null;
     if (openPosition) {
@@ -61,6 +78,7 @@ export async function GET(request) {
       priceHistory,
       openPosition,
       positionStatus,
+      equityCurve,
       recentClosedTrades: trades.filter(t => t.status === 'closed').slice(-10).reverse(),
       balance,
       note: 'Route de détail shadow — lecture seule, aucune écriture Redis.',
