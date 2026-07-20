@@ -1,10 +1,18 @@
 // app/api/cron/daily-predictions/route.js
+// Déclenché quotidiennement par Vercel Cron (voir vercel.json).
+// Récupère les matchs du jour, calcule une prédiction complète pour chacun
+// (dans la limite de MAX_MATCHES_PER_DAY, sécurité anti-dépassement de quota
+// API-Football), et met le tout en cache Redis.
+
 import { NextResponse } from "next/server";
 import { getFixturesByDate } from "@/lib/apiFootball";
 import { redis } from "@/lib/redis";
 import { computeMatchPrediction } from "@/lib/predictionsOrchestrator";
 
-const WATCHED_LEAGUES = [61, 39, 140, 135, 78];
+const WATCHED_LEAGUES = [61, 39, 140, 135, 78, 2, 4]; // + Ligue des Champions (2), Ligue Conférence (4)
+
+// Sécurité anti-quota : chaque match traité coûte jusqu'à 6 appels API-Football.
+// Ajuste cette valeur une fois ton plan API-Football confirmé.
 const MAX_MATCHES_PER_DAY = 5;
 
 export async function GET(request) {
@@ -24,6 +32,8 @@ export async function GET(request) {
     const predictions = [];
     const errors = [];
 
+    // Traitement séquentiel (pas en parallèle) pour rester prudent vis-à-vis du quota
+    // et des limites de requêtes par minute d'API-Football.
     for (const fixture of toProcess) {
       try {
         const prediction = await computeMatchPrediction(fixture);
