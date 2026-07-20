@@ -259,7 +259,12 @@ export function calculateScore(candles, candles1h) {
   const currentADX = adx[adx.length - 1];
   const threshold = getDynamicThreshold(currentADX);
 
-  const shouldTrade = score >= threshold;
+  // Blocage total en régime "range" (ADX < 20) : observé empiriquement sur le shadow trading
+  // (40 trades cumulés XAU/USD + EUR/USD) que ce régime produit 0% de winrate même quand le
+  // score dépasse le seuil déjà relevé à 60. Un score élevé en range n'est pas plus fiable
+  // qu'un score faible — donc on bloque plutôt que de continuer à relever le seuil indéfiniment.
+  const isRangeRegime = currentADX !== null && currentADX <= ADX_THRESHOLDS.MODERATE_TREND.min;
+  const shouldTrade = !isRangeRegime && score >= threshold;
 
   return {
     score: Math.round(score * 100) / 100,
@@ -267,6 +272,7 @@ export function calculateScore(candles, candles1h) {
     adx: currentADX,
     threshold,
     shouldTrade,
+    blockedByRangeRegime: isRangeRegime,
     breakdown: { trend, macd, rsi, h1Confirmation: h1, volatility },
   };
 }
