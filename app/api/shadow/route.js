@@ -59,7 +59,7 @@ export async function GET(request) {
     ]);
 
     const existingState = (await redis.get(redisKey)) || createInitialShadowState();
-    const newState = runShadowCycle(existingState, candles5min, candles1h);
+    const newState = await runShadowCycle(existingState, candles5min, candles1h, symbol);
 
     await redis.set(redisKey, newState);
 
