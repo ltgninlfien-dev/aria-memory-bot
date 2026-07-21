@@ -6,6 +6,7 @@
 
 import { calculateScore } from './scoreEngine';
 import { createPosition, evaluatePosition } from './positionManager';
+import { checkTradeContext } from './aiTradeAnalysis';
 import {
   getRiskPause,
   getPositionSizeMultiplier,
@@ -41,9 +42,10 @@ export function createInitialShadowState() {
  * @param {Object} state - état shadow courant (voir createInitialShadowState)
  * @param {Array} candles5min - bougies 5min (250 recommandé)
  * @param {Array} candles1h - bougies 1h
- * @returns {Object} nouvel état shadow à persister
+ * @param {string} symbol - 'XAU/USD' ou 'EUR/USD', nécessaire pour la vérification IA
+ * @returns {Promise<Object>} nouvel état shadow à persister
  */
-export function runShadowCycle(state, candles5min, candles1h) {
+export async function runShadowCycle(state, candles5min, candles1h, symbol) {
   const currentPrice = candles5min[candles5min.length - 1].close;
   const v2Result = calculateScore(candles5min, candles1h);
   const currentAtr = v2Result.breakdown.volatility.detail.atr;
@@ -123,6 +125,27 @@ export function runShadowCycle(state, candles5min, candles1h) {
     }
 
     const sizeMultiplier = getPositionSizeMultiplier(trades);
+
+    // Vérification contextuelle IA — uniquement à ce moment précis (pas à chaque cycle),
+    // pour rester sobre en coût. N'écrase jamais un signal technique sur une simple hésitation ;
+    // ne bloque que si un risque "high" est détecté (événement macro majeur imminent/en cours).
+    const aiCheck = await checkTradeContext(symbol, v2Result.direction, v2Result);
+
+    if (aiCheck.riskLevel === 'high') {
+      return {
+        trades,
+        openPosition: null,
+        account,
+        shadowLog: logShadowEntry(shadowLog, {
+          timestamp: Date.now(),
+          v2Result,
+          outcome: 'skipped_ai_risk',
+          aiCheck,
+        }),
+        lastCheckedAt: Date.now(),
+      };
+    }
+
     // Taille basée sur le risque par trade rapporté à la distance du SL (cohérent avec positionManager)
     const slDistance = currentAtr * 1.5; // doit rester aligné avec SL_ATR_MULTIPLIER de positionManager.js
     const riskAmount = account.balance * RISK_PER_TRADE;
@@ -137,6 +160,7 @@ export function runShadowCycle(state, candles5min, candles1h) {
       score: v2Result.score,
       entryAdx: v2Result.adx,
       entryThreshold: v2Result.threshold,
+      aiCheck,
       status: 'open',
       openedAt: Date.now(),
     };
