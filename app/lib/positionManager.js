@@ -7,7 +7,9 @@
 // --- Paramètres de risque (V2.1) ---
 const SL_ATR_MULTIPLIER = 1.5;        // Stop-loss initial = 1.5x ATR
 const TP_ATR_MULTIPLIER = 3;          // Take-profit initial = 3x ATR (ratio risk/reward 1:2)
-const BREAKEVEN_TRIGGER_ATR = 1;      // Déclenche le break-even à +1x ATR de profit
+const BREAKEVEN_TRIGGER_ATR = 0.5;    // Déclenche le break-even à +0.5x ATR de profit (abaissé de 1x
+                                       // suite à l'observation répétée de trades passant en profit
+                                       // significatif puis retombant en perte complète sans protection)
 const TRAILING_DISTANCE_ATR = 1.5;    // Distance du trailing stop une fois activé
 
 /**
