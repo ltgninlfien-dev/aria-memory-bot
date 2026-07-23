@@ -10,6 +10,9 @@ export const MAX_CONSECUTIVE_LOSSES = 3;
 export const CONSECUTIVE_LOSS_PAUSE_MS = 2 * 60 * 60 * 1000;
 export const POSITION_SIZE_REDUCTION_AFTER_LOSS = 0.25;
 export const MAX_JUDGMENT_LOG_SIZE = 300; // nombre max d'entrées conservées dans le journal de jugements
+export const MIN_PROFIT_TARGET_USD = 2; // ferme immédiatement dès que le profit latent atteint ce montant,
+                                          // prioritaire sur le target/stop fixes — objectif de gains
+                                          // réguliers plutôt que quelques gros gains ponctuels
 
 // ============ QUALITY FILTERS CONSTANTS ============
 export const TREND_SMA_PERIOD = 50; // moyenne mobile pour détecter la tendance de fond
@@ -358,12 +361,16 @@ export function runTradingCycle(state, closes, currentPrice, closes1h = null) {
       ? (currentPrice - openPosition.entryPrice) / openPosition.entryPrice
       : (openPosition.entryPrice - currentPrice) / openPosition.entryPrice;
 
+    const pnl = openPosition.positionSize * pnlPct;
+
+    // Priorité absolue : dès que le profit latent atteint MIN_PROFIT_TARGET_USD, on ferme —
+    // avant même de vérifier le target/stop fixes, conformément à l'objectif de gains réguliers.
+    const minProfitTargetHit = pnl >= MIN_PROFIT_TARGET_USD;
     const targetOrStopHit = pnlPct >= 0.015 || pnlPct <= -0.008;
     const reversalCheck = shouldCloseOnReversal(signal, openPosition, state);
-    const shouldClose = targetOrStopHit || reversalCheck.close;
+    const shouldClose = minProfitTargetHit || targetOrStopHit || reversalCheck.close;
 
     if (shouldClose) {
-      const pnl = openPosition.positionSize * pnlPct;
       const closedTrade = {
         ...openPosition,
         status: 'closed',
@@ -371,7 +378,7 @@ export function runTradingCycle(state, closes, currentPrice, closes1h = null) {
         pnl,
         pnlPct,
         closedAt: Date.now(),
-        closeReason: pnlPct >= 0.015 ? 'target' : pnlPct <= -0.008 ? 'stop' : 'signal_reversal'
+        closeReason: minProfitTargetHit ? 'profit_target' : pnlPct >= 0.015 ? 'target' : pnlPct <= -0.008 ? 'stop' : 'signal_reversal'
       };
       newTrades = trades.map(t => t.id === openPosition.id ? closedTrade : t);
       newAccount = { balance: account.balance + pnl, equity: account.balance + pnl };
