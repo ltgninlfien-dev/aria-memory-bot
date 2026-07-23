@@ -1,7 +1,7 @@
 "use client";
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
-import { TrendingUp, TrendingDown, Target, RefreshCw, FlaskConical, ShieldCheck } from 'lucide-react';
+import { TrendingUp, TrendingDown, Target, RefreshCw, FlaskConical, ShieldCheck, History } from 'lucide-react';
 
 const REFRESH_INTERVAL = 30000;
 
@@ -41,6 +41,8 @@ function interpretTrade(trade) {
       return won
         ? "Fermé manuellement en profit — décision humaine plutôt qu'un mécanisme automatique. Utile pour comparer plus tard si sortir plus tôt aurait été préférable au trailing."
         : "Fermé manuellement en perte — décision humaine plutôt qu'un mécanisme automatique.";
+    case 'profit_target':
+      return "Fermé automatiquement dès que le profit latent a atteint le seuil de 2$ — objectif de gains réguliers plutôt que d'attendre un gain plus important via le trailing.";
     default:
       return "Raison de clôture non reconnue.";
   }
@@ -51,6 +53,7 @@ export default function ShadowBot({ symbol = 'XAU/USD' }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [closing, setClosing] = useState(false);
+  const [activeTab, setActiveTab] = useState('live');
   const intervalRef = useRef(null);
 
   const fetchData = useCallback(async () => {
@@ -109,8 +112,17 @@ export default function ShadowBot({ symbol = 'XAU/USD' }) {
   const openPosition = data?.openPosition || null;
   const positionStatus = data?.positionStatus || null;
   const equityCurve = data?.equityCurve || [];
-  const recentClosedTrades = data?.recentClosedTrades || [];
+  const allClosedTrades = data?.allClosedTrades || [];
+  const recentClosedTrades = allClosedTrades.slice(0, 10);
   const balance = data?.balance;
+
+  const historySummary = {
+    count: allClosedTrades.length,
+    winRate: allClosedTrades.length > 0
+      ? Math.round((allClosedTrades.filter(t => t.pnl > 0).length / allClosedTrades.length) * 1000) / 10
+      : null,
+    totalPnl: Math.round(allClosedTrades.reduce((sum, t) => sum + t.pnl, 0) * 100) / 100,
+  };
 
   const currentPrice = priceHistory.length > 0 ? priceHistory[priceHistory.length - 1].price : null;
 
@@ -157,14 +169,23 @@ export default function ShadowBot({ symbol = 'XAU/USD' }) {
           </div>
         )}
 
-        {balance !== null && balance !== undefined && (
+        <div style={{ display: 'flex', gap: 4, background: '#10151f', border: '1px solid #1f2733', borderRadius: 8, padding: 4, marginBottom: 20, width: 'fit-content' }}>
+          {['live', 'historique'].map(tab => (
+            <button key={tab} onClick={() => setActiveTab(tab)}
+              style={{ padding: '8px 16px', background: activeTab === tab ? '#1f2733' : 'transparent', border: 'none', borderRadius: 6, color: activeTab === tab ? '#e8e6e1' : '#6b7685', fontFamily: 'IBM Plex Sans', fontSize: 12, fontWeight: 600, cursor: 'pointer', textTransform: 'capitalize' }}>
+              {tab}
+            </button>
+          ))}
+        </div>
+
+        {activeTab === 'live' && balance !== null && balance !== undefined && (
           <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 10, padding: '14px 16px', marginBottom: 20, width: 'fit-content' }}>
             <div className="label-font" style={{ fontSize: 10, color: '#6b7685', letterSpacing: 0.5, marginBottom: 6, textTransform: 'uppercase' }}>Capital fictif shadow</div>
             <div style={{ fontSize: 18, fontWeight: 700, color: balance >= 10000 ? '#4ade80' : '#d4574a' }}>${balance.toFixed(2)}</div>
           </div>
         )}
 
-        {priceHistory.length > 0 && (
+        {activeTab === 'live' && priceHistory.length > 0 && (
           <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 12, padding: 20, marginBottom: 20 }}>
             <div className="label-font" style={{ fontSize: 12, color: '#6b7685', marginBottom: 14, letterSpacing: 0.5 }}>{symbol} &middot; 5 MIN</div>
             <ResponsiveContainer width="100%" height={240}>
@@ -188,22 +209,42 @@ export default function ShadowBot({ symbol = 'XAU/USD' }) {
           </div>
         )}
 
-        {equityCurve.length > 1 && (
-          <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 12, padding: 20, marginBottom: 20 }}>
-            <div className="label-font" style={{ fontSize: 12, color: '#6b7685', marginBottom: 14, letterSpacing: 0.5 }}>COURBE DE CAPITAL SHADOW</div>
-            <ResponsiveContainer width="100%" height={180}>
-              <LineChart data={equityCurve}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1f2733" />
-                <XAxis dataKey="trade" stroke="#4a5568" fontSize={10} tick={{ fill: '#6b7685' }} />
-                <YAxis stroke="#4a5568" fontSize={10} tick={{ fill: '#6b7685' }} domain={['auto', 'auto']} />
-                <Tooltip contentStyle={{ background: '#0a0e14', border: '1px solid #2a3441', borderRadius: 8, fontSize: 12 }} />
-                <ReferenceLine y={10000} stroke="#4a5568" strokeDasharray="4 4" label={{ value: 'Départ', fill: '#6b7685', fontSize: 10 }} />
-                <Line type="monotone" dataKey="equity" stroke="#9d7ad4" strokeWidth={2} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
+        {activeTab === 'historique' && (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 20 }}>
+              <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 10, padding: '14px 16px' }}>
+                <div className="label-font" style={{ fontSize: 10, color: '#6b7685', letterSpacing: 0.5, marginBottom: 6, textTransform: 'uppercase' }}>Trades clos</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: '#9aa3af' }}>{historySummary.count}</div>
+              </div>
+              <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 10, padding: '14px 16px' }}>
+                <div className="label-font" style={{ fontSize: 10, color: '#6b7685', letterSpacing: 0.5, marginBottom: 6, textTransform: 'uppercase' }}>Win rate</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: '#9d7ad4' }}>{historySummary.winRate !== null ? `${historySummary.winRate}%` : '—'}</div>
+              </div>
+              <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 10, padding: '14px 16px' }}>
+                <div className="label-font" style={{ fontSize: 10, color: '#6b7685', letterSpacing: 0.5, marginBottom: 6, textTransform: 'uppercase' }}>P&L total</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: historySummary.totalPnl >= 0 ? '#4ade80' : '#d4574a' }}>{historySummary.totalPnl >= 0 ? '+' : ''}${historySummary.totalPnl.toFixed(2)}</div>
+              </div>
+            </div>
+
+            {equityCurve.length > 1 && (
+              <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 12, padding: 20, marginBottom: 20 }}>
+                <div className="label-font" style={{ fontSize: 12, color: '#6b7685', marginBottom: 14, letterSpacing: 0.5 }}>COURBE DE CAPITAL SHADOW</div>
+                <ResponsiveContainer width="100%" height={180}>
+                  <LineChart data={equityCurve}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#1f2733" />
+                    <XAxis dataKey="trade" stroke="#4a5568" fontSize={10} tick={{ fill: '#6b7685' }} />
+                    <YAxis stroke="#4a5568" fontSize={10} tick={{ fill: '#6b7685' }} domain={['auto', 'auto']} />
+                    <Tooltip contentStyle={{ background: '#0a0e14', border: '1px solid #2a3441', borderRadius: 8, fontSize: 12 }} />
+                    <ReferenceLine y={10000} stroke="#4a5568" strokeDasharray="4 4" label={{ value: 'Départ', fill: '#6b7685', fontSize: 10 }} />
+                    <Line type="monotone" dataKey="equity" stroke="#9d7ad4" strokeWidth={2} dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </>
         )}
 
+        {activeTab === 'live' && (
         <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 12, padding: 20, marginBottom: 20 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
             <Target size={15} color="#9d7ad4" />
@@ -282,15 +323,16 @@ export default function ShadowBot({ symbol = 'XAU/USD' }) {
             <div className="label-font" style={{ fontSize: 13, color: '#6b7685' }}>Aucune position shadow. En attente d'un signal V2 fiable.</div>
           )}
         </div>
+        )}
 
         <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 12, overflow: 'hidden' }}>
           <div style={{ padding: '14px 20px', borderBottom: '1px solid #1f2733' }}>
-            <span className="label-font" style={{ fontSize: 12, color: '#6b7685', letterSpacing: 0.5 }}>DERNIERS TRADES SHADOW CLOS</span>
+            <span className="label-font" style={{ fontSize: 12, color: '#6b7685', letterSpacing: 0.5 }}>{activeTab === 'live' ? 'DERNIERS TRADES SHADOW CLOS' : 'HISTORIQUE COMPLET DES TRADES'}</span>
           </div>
-          {recentClosedTrades.length === 0 ? (
+          {(activeTab === 'live' ? recentClosedTrades : allClosedTrades).length === 0 ? (
             <div className="label-font" style={{ padding: 24, fontSize: 13, color: '#6b7685' }}>Aucun trade clos pour l'instant.</div>
           ) : (
-            recentClosedTrades.map(t => (
+            (activeTab === 'live' ? recentClosedTrades : allClosedTrades).map(t => (
               <div key={t.id} style={{ padding: '14px 20px', borderBottom: '1px solid #161c26' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 6 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
