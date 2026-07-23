@@ -11,6 +11,9 @@ const BREAKEVEN_TRIGGER_ATR = 0.5;    // Déclenche le break-even à +0.5x ATR d
                                        // suite à l'observation répétée de trades passant en profit
                                        // significatif puis retombant en perte complète sans protection)
 const TRAILING_DISTANCE_ATR = 1.5;    // Distance du trailing stop une fois activé
+const MIN_PROFIT_TARGET_USD = 2;      // Ferme immédiatement dès que le profit latent atteint ce montant,
+                                       // prioritaire sur le trailing/TP — objectif de gains réguliers
+                                       // plutôt que quelques gros gains ponctuels
 
 /**
  * Calcule le SL et le TP initiaux à l'ouverture d'une position
@@ -138,8 +141,23 @@ function checkExitConditions(position, currentPrice) {
 }
 
 /**
+ * Calcule le P&L latent en dollars d'une position, à un prix donné
+ * @param {Object} position - { entryPrice, direction, positionSize }
+ * @param {number} currentPrice
+ * @returns {number} profit/perte en dollars
+ */
+function computeUnrealizedPnl(position, currentPrice) {
+  const pnlPct =
+    position.direction === 'BUY'
+      ? (currentPrice - position.entryPrice) / position.entryPrice
+      : (position.entryPrice - currentPrice) / position.entryPrice;
+  return position.positionSize * pnlPct;
+}
+
+/**
  * Fonction principale — à appeler à chaque cycle pour une position ouverte
- * Enchaîne : vérification break-even -> mise à jour trailing -> vérification de clôture
+ * Enchaîne : vérification break-even -> mise à jour trailing -> vérification du seuil
+ * de profit minimum (prioritaire) -> vérification de clôture standard
  * @param {Object} position - { entryPrice, direction, stopLoss, takeProfit, breakEvenTriggered, trailingActive, entryAtr }
  * @param {number} currentPrice
  * @returns {{ updatedPosition: Object, shouldClose: boolean, closeReason: string|null }}
@@ -147,6 +165,13 @@ function checkExitConditions(position, currentPrice) {
 export function evaluatePosition(position, currentPrice) {
   let updatedPosition = checkBreakEven(position, currentPrice);
   updatedPosition = updateTrailingStop(updatedPosition, currentPrice);
+
+  // Priorité absolue : dès que le profit latent atteint le seuil, on ferme —
+  // avant même de vérifier SL/TP/trailing, conformément à l'objectif de gains réguliers.
+  const unrealizedPnl = computeUnrealizedPnl(updatedPosition, currentPrice);
+  if (unrealizedPnl >= MIN_PROFIT_TARGET_USD) {
+    return { updatedPosition, shouldClose: true, closeReason: 'profit_target' };
+  }
 
   const { shouldClose, reason } = checkExitConditions(updatedPosition, currentPrice);
 
