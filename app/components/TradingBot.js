@@ -54,6 +54,8 @@ function interpretTrade(trade) {
   switch (trade.closeReason) {
     case 'target':
       return "Take-profit fixe atteint (+1.5%). Le trade a suivi le scénario prévu jusqu'au bout.";
+    case 'profit_target':
+      return "Fermé automatiquement dès que le profit latent a atteint le seuil de 2$ — objectif de gains réguliers plutôt que d'attendre un gain plus important.";
     case 'stop':
       return "Stop-loss fixe touché (-0.8%). Le marché est allé à l'encontre de la position sans jamais se retourner favorablement. Ce moteur (V1) n'a pas de break-even ni de trailing : une fois le SL fixe atteint, la perte est plafonnée à -0.8% mais non récupérable en cours de route.";
     case 'signal_reversal':
