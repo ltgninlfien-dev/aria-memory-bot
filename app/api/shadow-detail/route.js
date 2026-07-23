@@ -79,7 +79,7 @@ export async function GET(request) {
       openPosition,
       positionStatus,
       equityCurve,
-      recentClosedTrades: trades.filter(t => t.status === 'closed').slice(-10).reverse(),
+      allClosedTrades: [...closedTradesSorted].reverse(), // du plus récent au plus ancien
       balance,
       note: 'Route de détail shadow — lecture seule, aucune écriture Redis.',
     });
