@@ -1,7 +1,7 @@
 "use client";
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
-import { TrendingUp, TrendingDown, Target, RefreshCw, FlaskConical, ShieldCheck, History } from 'lucide-react';
+import { TrendingUp, TrendingDown, Target, RefreshCw, FlaskConical, ShieldCheck, History, Brain } from 'lucide-react';
 
 const REFRESH_INTERVAL = 30000;
 
@@ -113,6 +113,8 @@ export default function ShadowBot({ symbol = 'XAU/USD' }) {
   const positionStatus = data?.positionStatus || null;
   const equityCurve = data?.equityCurve || [];
   const allClosedTrades = data?.allClosedTrades || [];
+  const periodSummary = data?.periodSummary || null;
+  const learningState = data?.learningState || null;
   const recentClosedTrades = allClosedTrades.slice(0, 10);
   const balance = data?.balance;
 
@@ -170,7 +172,7 @@ export default function ShadowBot({ symbol = 'XAU/USD' }) {
         )}
 
         <div style={{ display: 'flex', gap: 4, background: '#10151f', border: '1px solid #1f2733', borderRadius: 8, padding: 4, marginBottom: 20, width: 'fit-content' }}>
-          {['live', 'historique'].map(tab => (
+          {['live', 'historique', 'memoire'].map(tab => (
             <button key={tab} onClick={() => setActiveTab(tab)}
               style={{ padding: '8px 16px', background: activeTab === tab ? '#1f2733' : 'transparent', border: 'none', borderRadius: 6, color: activeTab === tab ? '#e8e6e1' : '#6b7685', fontFamily: 'IBM Plex Sans', fontSize: 12, fontWeight: 600, cursor: 'pointer', textTransform: 'capitalize' }}>
               {tab}
@@ -225,6 +227,17 @@ export default function ShadowBot({ symbol = 'XAU/USD' }) {
                 <div style={{ fontSize: 18, fontWeight: 700, color: historySummary.totalPnl >= 0 ? '#4ade80' : '#d4574a' }}>{historySummary.totalPnl >= 0 ? '+' : ''}${historySummary.totalPnl.toFixed(2)}</div>
               </div>
             </div>
+
+            {periodSummary && (
+              <div style={{ marginBottom: 20 }}>
+                <div className="label-font" style={{ fontSize: 11, color: '#6b7685', marginBottom: 10, letterSpacing: 0.5 }}>BILAN PAR PÉRIODE</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+                  <PeriodCard label="Aujourd'hui" data={periodSummary.today} />
+                  <PeriodCard label="Cette semaine" data={periodSummary.thisWeek} />
+                  <PeriodCard label="Ce mois" data={periodSummary.thisMonth} />
+                </div>
+              </div>
+            )}
 
             {equityCurve.length > 1 && (
               <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 12, padding: 20, marginBottom: 20 }}>
@@ -325,6 +338,7 @@ export default function ShadowBot({ symbol = 'XAU/USD' }) {
         </div>
         )}
 
+        {(activeTab === 'live' || activeTab === 'historique') && (
         <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 12, overflow: 'hidden' }}>
           <div style={{ padding: '14px 20px', borderBottom: '1px solid #1f2733' }}>
             <span className="label-font" style={{ fontSize: 12, color: '#6b7685', letterSpacing: 0.5 }}>{activeTab === 'live' ? 'DERNIERS TRADES SHADOW CLOS' : 'HISTORIQUE COMPLET DES TRADES'}</span>
@@ -354,7 +368,67 @@ export default function ShadowBot({ symbol = 'XAU/USD' }) {
             ))
           )}
         </div>
+        )}
+
+        {activeTab === 'memoire' && learningState && (
+          <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 12, padding: 20 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18 }}>
+              <Brain size={16} color="#9d7ad4" />
+              <span className="label-font" style={{ fontSize: 13, fontWeight: 600 }}>Ce que le shadow observe</span>
+            </div>
+            <div style={{ background: '#2a2010', border: '1px solid #4a3a1f', borderRadius: 8, padding: '10px 14px', marginBottom: 16 }}>
+              <span className="label-font" style={{ fontSize: 12, color: '#e8d4a8' }}>
+                Mode observation uniquement — ce décalage est calculé et mémorisé à chaque trade clos, mais n'influence pas encore les décisions de trading réelles.
+              </span>
+            </div>
+            <p className="label-font" style={{ fontSize: 13, color: '#9aa3af', lineHeight: 1.7, marginBottom: 20 }}>
+              Après chaque trade clos, le système recalcule le taux de réussite sur les 20 derniers trades
+              et calcule le décalage qui *serait* appliqué par-dessus le seuil dynamique ADX (déjà calculé par le score V2) :
+              plus sélectif si le winrate tombe sous 30%, légèrement plus permissif au-dessus de 50%.
+            </p>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 14, marginBottom: 18 }}>
+              <div style={{ background: '#0a0e14', border: '1px solid #1f2733', borderRadius: 8, padding: '14px 16px', textAlign: 'center' }}>
+                <div style={{ fontSize: 20, fontWeight: 700, color: '#9d7ad4', marginBottom: 4 }}>
+                  {learningState.adjustment >= 0 ? '+' : ''}{learningState.adjustment}
+                </div>
+                <div className="label-font" style={{ fontSize: 10, color: '#6b7685' }}>Décalage calculé (non appliqué)</div>
+              </div>
+              <div style={{ background: '#0a0e14', border: '1px solid #1f2733', borderRadius: 8, padding: '14px 16px', textAlign: 'center' }}>
+                <div style={{ fontSize: 20, fontWeight: 700, color: '#9d7ad4', marginBottom: 4 }}>
+                  {learningState.recentWinRate !== null ? `${learningState.recentWinRate}%` : '—'}
+                </div>
+                <div className="label-font" style={{ fontSize: 10, color: '#6b7685' }}>Winrate (20 derniers)</div>
+              </div>
+            </div>
+            {!learningState.active && (
+              <div className="label-font" style={{ fontSize: 12, color: '#6b7685', fontStyle: 'italic' }}>
+                L'ajustement automatique s'active après 5 trades clos. ({learningState.closedCount}/5)
+              </div>
+            )}
+          </div>
+        )}
       </div>
+    </div>
+  );
+}
+
+function PeriodCard({ label, data }) {
+  if (!data || data.count === 0) {
+    return (
+      <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 10, padding: '12px 14px' }}>
+        <div className="label-font" style={{ fontSize: 10, color: '#6b7685', marginBottom: 6 }}>{label}</div>
+        <div className="label-font" style={{ fontSize: 12, color: '#6b7685' }}>Aucun trade</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 10, padding: '12px 14px' }}>
+      <div className="label-font" style={{ fontSize: 10, color: '#6b7685', marginBottom: 6 }}>{label}</div>
+      <div style={{ fontSize: 15, fontWeight: 700, color: data.totalPnl >= 0 ? '#4ade80' : '#d4574a', marginBottom: 2 }}>
+        {data.totalPnl >= 0 ? '+' : ''}${data.totalPnl.toFixed(2)}
+      </div>
+      <div className="label-font" style={{ fontSize: 10, color: '#6b7685' }}>{data.count} trade{data.count > 1 ? 's' : ''} &middot; {data.winRate}% win</div>
     </div>
   );
 }
