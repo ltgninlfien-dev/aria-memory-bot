@@ -222,9 +222,11 @@ function getDynamicThreshold(adx) {
  * Calcule le score V2 complet pour un cycle de décision
  * @param {Array} candles - bougies 5min, triées ancien -> récent (250 recommandé pour EMA200)
  * @param {Array} candles1h - bougies 1h pour confirmation multi-timeframe
+ * @param {number} thresholdAdjustment - décalage appliqué au seuil dynamique, calculé par
+ *   v2LearningEngine.js à partir de l'historique de trades (0 par défaut, pas d'ajustement)
  * @returns {Object} { score, direction, threshold, shouldTrade, breakdown }
  */
-export function calculateScore(candles, candles1h) {
+export function calculateScore(candles, candles1h, thresholdAdjustment = 0) {
   const trend = scoreTrend(candles);
   const macd = scoreMACD(candles);
   const rsi = scoreRSI(candles);
@@ -257,7 +259,8 @@ export function calculateScore(candles, candles1h) {
 
   const { adx } = calculateADX(candles);
   const currentADX = adx[adx.length - 1];
-  const threshold = getDynamicThreshold(currentADX);
+  const baseThreshold = getDynamicThreshold(currentADX);
+  const threshold = Math.min(100, baseThreshold + thresholdAdjustment);
 
   // Blocage total en régime "range" (ADX < 20) : observé empiriquement sur le shadow trading
   // (40 trades cumulés XAU/USD + EUR/USD) que ce régime produit 0% de winrate même quand le
