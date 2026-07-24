@@ -5,6 +5,7 @@
 // Usage : /api/shadow-detail?symbol=XAU/USD
 
 import { Redis } from '@upstash/redis';
+import { adjustV2ThresholdFromHistory } from '../../lib/v2LearningEngine';
 
 const redis = new Redis({
   url: process.env.KV_REST_API_URL,
@@ -49,6 +50,7 @@ export async function GET(request) {
     const openPosition = shadowState?.openPosition || null;
     const trades = shadowState?.trades || [];
     const balance = shadowState?.account?.balance ?? null;
+    const learningState = adjustV2ThresholdFromHistory(trades, shadowState?.params?.thresholdAdjustment || 0);
 
     // Courbe de capital : calculée à partir de tout l'historique des trades clos,
     // triés chronologiquement, en partant du capital de départ.
@@ -65,6 +67,30 @@ export async function GET(request) {
       [{ trade: 0, equity: STARTING_CAPITAL }]
     );
 
+    // Bilans par période — journée, semaine (lundi-dimanche), mois calendaire en cours
+    function summarizePeriod(trades) {
+      if (trades.length === 0) return { count: 0, winRate: null, totalPnl: 0 };
+      const wins = trades.filter(t => t.pnl > 0).length;
+      const totalPnl = trades.reduce((sum, t) => sum + t.pnl, 0);
+      return {
+        count: trades.length,
+        winRate: Math.round((wins / trades.length) * 1000) / 10,
+        totalPnl: Math.round(totalPnl * 100) / 100,
+      };
+    }
+
+    const now = new Date();
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const dayOfWeek = now.getDay() === 0 ? 7 : now.getDay(); // lundi=1 ... dimanche=7
+    const startOfWeek = startOfDay - (dayOfWeek - 1) * 24 * 60 * 60 * 1000;
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+
+    const periodSummary = {
+      today: summarizePeriod(closedTradesSorted.filter(t => t.closedAt >= startOfDay)),
+      thisWeek: summarizePeriod(closedTradesSorted.filter(t => t.closedAt >= startOfWeek)),
+      thisMonth: summarizePeriod(closedTradesSorted.filter(t => t.closedAt >= startOfMonth)),
+    };
+
     // Statut lisible de la position, pour affichage direct sans logique côté client
     let positionStatus = null;
     if (openPosition) {
@@ -79,6 +105,8 @@ export async function GET(request) {
       openPosition,
       positionStatus,
       equityCurve,
+      periodSummary,
+      learningState,
       allClosedTrades: [...closedTradesSorted].reverse(), // du plus récent au plus ancien
       balance,
       note: 'Route de détail shadow — lecture seule, aucune écriture Redis.',
