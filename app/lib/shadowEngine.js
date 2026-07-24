@@ -7,6 +7,7 @@
 import { calculateScore } from './scoreEngine';
 import { createPosition, evaluatePosition } from './positionManager';
 import { checkTradeContext } from './aiTradeAnalysis';
+import { adjustV2ThresholdFromHistory } from './v2LearningEngine';
 import {
   getRiskPause,
   getPositionSizeMultiplier,
@@ -32,6 +33,7 @@ export function createInitialShadowState() {
     openPosition: null,
     account: { balance: STARTING_CAPITAL, equity: STARTING_CAPITAL },
     shadowLog: [],
+    params: { thresholdAdjustment: 0 },
     lastCheckedAt: null,
   };
 }
@@ -47,6 +49,11 @@ export function createInitialShadowState() {
  */
 export async function runShadowCycle(state, candles5min, candles1h, symbol) {
   const currentPrice = candles5min[candles5min.length - 1].close;
+  const params = state.params || { thresholdAdjustment: 0 };
+  // Note : le décalage appris (params.thresholdAdjustment) n'est PAS encore appliqué ici.
+  // Pour l'instant, la mémoire enregistre et observe seulement — elle n'influence pas
+  // encore les décisions de trading. L'application effective viendra dans une étape
+  // ultérieure, une fois le comportement de la mémoire validé par l'observation.
   const v2Result = calculateScore(candles5min, candles1h);
   const currentAtr = v2Result.breakdown.volatility.detail.atr;
 
@@ -76,16 +83,20 @@ export async function runShadowCycle(state, candles5min, candles1h, symbol) {
 
       const newTrades = [...trades, closedTrade];
       const newAccount = { balance: account.balance + pnl, equity: account.balance + pnl };
+      const learning = adjustV2ThresholdFromHistory(newTrades, params.thresholdAdjustment);
+      const newParams = { ...params, thresholdAdjustment: learning.adjustment };
 
       return {
         trades: newTrades,
         openPosition: null,
         account: newAccount,
+        params: newParams,
         shadowLog: logShadowEntry(shadowLog, {
           timestamp: Date.now(),
           v2Result,
           outcome: 'closed',
           closeReason,
+          learning,
         }),
         lastCheckedAt: Date.now(),
       };
@@ -96,6 +107,7 @@ export async function runShadowCycle(state, candles5min, candles1h, symbol) {
       trades,
       openPosition: updatedPosition,
       account,
+      params,
       shadowLog: logShadowEntry(shadowLog, {
         timestamp: Date.now(),
         v2Result,
@@ -114,6 +126,7 @@ export async function runShadowCycle(state, candles5min, candles1h, symbol) {
         trades,
         openPosition: null,
         account,
+        params,
         shadowLog: logShadowEntry(shadowLog, {
           timestamp: Date.now(),
           v2Result,
@@ -136,6 +149,7 @@ export async function runShadowCycle(state, candles5min, candles1h, symbol) {
         trades,
         openPosition: null,
         account,
+        params,
         shadowLog: logShadowEntry(shadowLog, {
           timestamp: Date.now(),
           v2Result,
@@ -169,6 +183,7 @@ export async function runShadowCycle(state, candles5min, candles1h, symbol) {
       trades,
       openPosition: newPosition,
       account,
+      params,
       shadowLog: logShadowEntry(shadowLog, {
         timestamp: Date.now(),
         v2Result,
@@ -183,6 +198,7 @@ export async function runShadowCycle(state, candles5min, candles1h, symbol) {
     trades,
     openPosition,
     account,
+    params,
     shadowLog: logShadowEntry(shadowLog, {
       timestamp: Date.now(),
       v2Result,
