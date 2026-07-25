@@ -6,6 +6,7 @@
 
 import { Redis } from '@upstash/redis';
 import { adjustV2ThresholdFromHistory } from '../../lib/v2LearningEngine';
+import { isWeekendClosure } from '../../lib/weekendReview';
 
 const redis = new Redis({
   url: process.env.KV_REST_API_URL,
@@ -107,6 +108,8 @@ export async function GET(request) {
       equityCurve,
       periodSummary,
       learningState,
+      marketClosed: isWeekendClosure(),
+      weeklyReview: shadowState?.weeklyReview || null,
       allClosedTrades: [...closedTradesSorted].reverse(), // du plus récent au plus ancien
       balance,
       note: 'Route de détail shadow — lecture seule, aucune écriture Redis.',
