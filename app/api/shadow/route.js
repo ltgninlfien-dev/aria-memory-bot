@@ -6,6 +6,7 @@
 
 import { Redis } from '@upstash/redis';
 import { runShadowCycle, createInitialShadowState } from '../../lib/shadowEngine';
+import { isWeekendClosure, getWeekKey, generateWeekendReview } from '../../lib/weekendReview';
 
 const redis = new Redis({
   url: process.env.KV_REST_API_URL,
@@ -53,6 +54,37 @@ export async function GET(request) {
   const redisKey = redisKeyForSymbol(symbol);
 
   try {
+    // Marché fermé le week-end : on n'interroge pas Twelve Data pour rien (prix figés),
+    // et on génère plutôt un bilan/analyse d'erreurs de la semaine, une seule fois par week-end.
+    if (isWeekendClosure()) {
+      const existingState = (await redis.get(redisKey)) || createInitialShadowState();
+      const currentWeekKey = getWeekKey();
+
+      if (existingState.weeklyReview?.weekKey === currentWeekKey) {
+        return Response.json({
+          ok: true,
+          symbol,
+          skipped: true,
+          reason: 'weekend_closure',
+          note: 'Marché fermé le week-end — bilan déjà généré pour cette semaine, aucun appel Twelve Data effectué.',
+          weeklyReview: existingState.weeklyReview,
+        });
+      }
+
+      const weeklyReview = generateWeekendReview(existingState.trades);
+      const newState = { ...existingState, weeklyReview };
+      await redis.set(redisKey, newState);
+
+      return Response.json({
+        ok: true,
+        symbol,
+        skipped: true,
+        reason: 'weekend_closure',
+        note: 'Marché fermé le week-end — bilan de la semaine généré, aucun appel Twelve Data effectué.',
+        weeklyReview,
+      });
+    }
+
     const [candles5min, candles1h] = await Promise.all([
       fetchCandles(symbol, '5min', 250),
       fetchCandles(symbol, '1h', 100),
