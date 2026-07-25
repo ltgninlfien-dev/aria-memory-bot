@@ -14,6 +14,12 @@ const TRAILING_DISTANCE_ATR = 1.5;    // Distance du trailing stop une fois acti
 const MIN_PROFIT_TARGET_USD = 2;      // Ferme immédiatement dès que le profit latent atteint ce montant,
                                        // prioritaire sur le trailing/TP — objectif de gains réguliers
                                        // plutôt que quelques gros gains ponctuels
+const NO_TRACTION_WINDOW_MS = 30 * 60 * 1000; // fenêtre de grâce de 30 min après ouverture
+const NO_TRACTION_ADVERSE_ATR = 0.5;  // si la position perd déjà 0.5x ATR pendant cette fenêtre,
+                                       // sans avoir jamais montré de traction favorable (pas de
+                                       // break-even déclenché), on coupe plus tôt que le stop-loss
+                                       // complet — le trade n'a montré aucun signe de traction
+                                       // rentable dès le départ
 
 /**
  * Calcule le SL et le TP initiaux à l'ouverture d'une position
@@ -155,9 +161,27 @@ function computeUnrealizedPnl(position, currentPrice) {
 }
 
 /**
+ * Détecte si une position, encore dans sa fenêtre de grâce après ouverture, n'a montré
+ * aucun signe de traction favorable (jamais atteint le break-even) et perd déjà de
+ * façon significative — signe que le trade était mal engagé dès le départ.
+ * @param {Object} position - { openedAt, breakEvenTriggered, entryAtr }
+ * @param {number} currentPrice
+ * @returns {boolean}
+ */
+function checkNoTractionExit(position, currentPrice) {
+  if (position.breakEvenTriggered) return false; // a déjà montré une traction favorable à un moment
+
+  const elapsedMs = Date.now() - position.openedAt;
+  if (elapsedMs > NO_TRACTION_WINDOW_MS) return false; // fenêtre de grâce terminée
+
+  const profitAtr = profitInAtrUnits(position, currentPrice, position.entryAtr);
+  return profitAtr <= -NO_TRACTION_ADVERSE_ATR;
+}
+
+/**
  * Fonction principale — à appeler à chaque cycle pour une position ouverte
  * Enchaîne : vérification break-even -> mise à jour trailing -> vérification du seuil
- * de profit minimum (prioritaire) -> vérification de clôture standard
+ * de profit minimum (prioritaire) -> sortie rapide sans traction -> clôture standard
  * @param {Object} position - { entryPrice, direction, stopLoss, takeProfit, breakEvenTriggered, trailingActive, entryAtr }
  * @param {number} currentPrice
  * @returns {{ updatedPosition: Object, shouldClose: boolean, closeReason: string|null }}
@@ -171,6 +195,12 @@ export function evaluatePosition(position, currentPrice) {
   const unrealizedPnl = computeUnrealizedPnl(updatedPosition, currentPrice);
   if (unrealizedPnl >= MIN_PROFIT_TARGET_USD) {
     return { updatedPosition, shouldClose: true, closeReason: 'profit_target' };
+  }
+
+  // Sortie rapide si aucune traction rentable dès le départ (fenêtre de grâce de 30 min) :
+  // coupe plus tôt qu'un stop-loss complet un trade qui n'a jamais montré de signe favorable.
+  if (checkNoTractionExit(updatedPosition, currentPrice)) {
+    return { updatedPosition, shouldClose: true, closeReason: 'no_traction_exit' };
   }
 
   const { shouldClose, reason } = checkExitConditions(updatedPosition, currentPrice);
