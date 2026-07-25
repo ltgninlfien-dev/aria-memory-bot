@@ -209,6 +209,27 @@ function scoreVolatility(candles) {
   return { points, detail: { atr, atrPercent } };
 }
 
+// Fenêtre de bougies utilisée pour vérifier qu'un momentum est déjà visible dans le sens
+// du signal avant d'ouvrir — évite d'entrer sur un signal techniquement valide mais dont
+// le prix ne montre encore aucun mouvement réel dans la direction attendue.
+const ENTRY_MOMENTUM_LOOKBACK = 3; // 3 bougies 5min = 15 minutes en arrière
+
+/**
+ * Vérifie qu'un mouvement de prix récent va déjà dans le sens du signal, avant d'ouvrir.
+ * @param {Array} candles - bougies 5min
+ * @param {'BUY'|'SELL'} direction
+ * @returns {boolean} true si le momentum récent confirme la direction du signal
+ */
+function checkEntryMomentum(candles, direction) {
+  if (candles.length < ENTRY_MOMENTUM_LOOKBACK + 1) return true; // pas assez de données, on ne bloque pas par défaut
+
+  const last = candles.length - 1;
+  const priceNow = candles[last].close;
+  const priceBefore = candles[last - ENTRY_MOMENTUM_LOOKBACK].close;
+
+  return direction === 'BUY' ? priceNow > priceBefore : priceNow < priceBefore;
+}
+
 function getDynamicThreshold(adx) {
   if (adx === null) return ADX_THRESHOLDS.MODERATE_TREND.threshold; // valeur par défaut prudente
   if (adx > ADX_THRESHOLDS.STRONG_TREND.min) return ADX_THRESHOLDS.STRONG_TREND.threshold;
@@ -267,7 +288,13 @@ export function calculateScore(candles, candles1h, thresholdAdjustment = 0) {
   // score dépasse le seuil déjà relevé à 60. Un score élevé en range n'est pas plus fiable
   // qu'un score faible — donc on bloque plutôt que de continuer à relever le seuil indéfiniment.
   const isRangeRegime = currentADX !== null && currentADX <= ADX_THRESHOLDS.MODERATE_TREND.min;
-  const shouldTrade = !isRangeRegime && score >= threshold;
+
+  // Vérification de traction immédiate : le signal doit déjà être accompagné d'un mouvement
+  // de prix récent dans le même sens. Évite d'ouvrir sur un score techniquement favorable
+  // mais dont le marché ne montre encore aucune conviction réelle dans cette direction.
+  const hasEntryMomentum = checkEntryMomentum(candles, direction);
+
+  const shouldTrade = !isRangeRegime && hasEntryMomentum && score >= threshold;
 
   return {
     score: Math.round(score * 100) / 100,
@@ -276,6 +303,7 @@ export function calculateScore(candles, candles1h, thresholdAdjustment = 0) {
     threshold,
     shouldTrade,
     blockedByRangeRegime: isRangeRegime,
+    blockedByNoMomentum: !hasEntryMomentum,
     breakdown: { trend, macd, rsi, h1Confirmation: h1, volatility },
   };
 }
