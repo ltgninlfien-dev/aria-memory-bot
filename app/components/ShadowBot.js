@@ -1,7 +1,7 @@
 "use client";
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
-import { TrendingUp, TrendingDown, Target, RefreshCw, FlaskConical, ShieldCheck, History, Brain } from 'lucide-react';
+import { TrendingUp, TrendingDown, Target, RefreshCw, FlaskConical, ShieldCheck, History, Brain, Moon } from 'lucide-react';
 
 const REFRESH_INTERVAL = 30000;
 
@@ -28,7 +28,7 @@ function interpretTrade(trade) {
     case 'stop_loss':
       return won
         ? "Cas rare : sortie sur stop-loss avec un léger gain — probablement un mouvement de prix entre deux vérifications (cron 30 min)."
-        : "Sortie sur stop-loss fixe (1.5×ATR). Le marché est allé à l'encontre de la position sans jamais atteindre le seuil de break-even (+1×ATR). Leçon : ce trade n'a montré aucun signe de traction favorable dès le départ.";
+        : "Sortie sur stop-loss fixe (1.5×ATR). Le marché est allé à l'encontre de la position sans jamais atteindre le seuil de break-even (+0.5×ATR). Leçon : ce trade n'a montré aucun signe de traction favorable dès le départ.";
     case 'breakeven_stop':
       return Math.abs(trade.pnl) < 1
         ? "Position sortie proche de l'équilibre : le trade est parti en profit, le stop a été remonté à l'entrée, puis le marché s'est retourné. Le capital a été protégé comme prévu."
@@ -43,6 +43,8 @@ function interpretTrade(trade) {
         : "Fermé manuellement en perte — décision humaine plutôt qu'un mécanisme automatique.";
     case 'profit_target':
       return "Fermé automatiquement dès que le profit latent a atteint le seuil de 2$ — objectif de gains réguliers plutôt que d'attendre un gain plus important via le trailing.";
+    case 'no_traction_exit':
+      return "Sortie rapide : le trade n'a montré aucun signe de traction favorable dans les 30 premières minutes et perdait déjà — coupé plus tôt qu'un stop-loss complet pour limiter la perte sur un trade mal engagé dès le départ.";
     default:
       return "Raison de clôture non reconnue.";
   }
@@ -117,6 +119,8 @@ export default function ShadowBot({ symbol = 'XAU/USD' }) {
   const learningState = data?.learningState || null;
   const recentClosedTrades = allClosedTrades.slice(0, 10);
   const balance = data?.balance;
+  const marketClosed = data?.marketClosed || false;
+  const weeklyReview = data?.weeklyReview || null;
 
   const historySummary = {
     count: allClosedTrades.length,
@@ -168,6 +172,15 @@ export default function ShadowBot({ symbol = 'XAU/USD' }) {
         {error && (
           <div style={{ background: '#2a1318', border: '1px solid #4a2229', borderRadius: 8, padding: '12px 16px', marginBottom: 20 }}>
             <span className="label-font" style={{ fontSize: 13, color: '#e8a8a8' }}>{error}</span>
+          </div>
+        )}
+
+        {marketClosed && (
+          <div style={{ background: '#10151f', border: '1px solid #2a2a4a', borderRadius: 8, padding: '12px 16px', marginBottom: 20, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <Moon size={16} color="#7a8cd4" />
+            <span className="label-font" style={{ fontSize: 13, color: '#9aa3af' }}>
+              Marché fermé le week-end — aucun nouveau trade tant qu'il n'a pas rouvert. Le bilan de la semaine est disponible ci-dessous.
+            </span>
           </div>
         )}
 
@@ -405,6 +418,23 @@ export default function ShadowBot({ symbol = 'XAU/USD' }) {
                 L'ajustement automatique s'active après 5 trades clos. ({learningState.closedCount}/5)
               </div>
             )}
+          </div>
+        )}
+
+        {activeTab === 'memoire' && weeklyReview && (
+          <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 12, padding: 20, marginTop: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+              <Moon size={16} color="#7a8cd4" />
+              <span className="label-font" style={{ fontSize: 13, fontWeight: 600 }}>Bilan de la semaine ({weeklyReview.weekKey})</span>
+            </div>
+            <div className="label-font" style={{ fontSize: 11, color: '#6b7685', marginBottom: 16 }}>
+              Généré automatiquement pendant la fermeture du marché, à partir de {weeklyReview.tradesAnalyzed} trade{weeklyReview.tradesAnalyzed > 1 ? 's' : ''} clos sur les 7 derniers jours.
+            </div>
+            {weeklyReview.lessons.map((lesson, i) => (
+              <div key={i} className="label-font" style={{ fontSize: 13, color: '#9aa3af', lineHeight: 1.6, padding: '8px 0', borderTop: i > 0 ? '1px solid #161c26' : 'none' }}>
+                &bull; {lesson}
+              </div>
+            ))}
           </div>
         )}
       </div>
