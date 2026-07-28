@@ -1,5 +1,5 @@
-import TradingBot from './components/TradingBot';
+import Hub from './components/Hub';
 
 export default function Home() {
-  return <TradingBot />;
+  return <Hub />;
 }
