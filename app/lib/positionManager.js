@@ -258,4 +258,66 @@ function checkNoTractionExit(position, currentPrice) {
   if (elapsedMs > NO_TRACTION_WINDOW_MS) return false; // fenêtre de grâce terminée
 
   const profitAtr = profitInAtrUnits(position, currentPrice, position.entryAtr);
-  return profitAtr
+  return profitAtr <= -NO_TRACTION_ADVERSE_ATR;
+}
+
+/**
+ * Fonction principale — à appeler à chaque cycle pour une position ouverte
+ * Enchaîne : break-even/trailing ATR (phase précoce, avant PS) -> Profit Sécurisé
+ * progressif (suit le pic, prend le relais dès +2$ de pic) -> sortie rapide sans
+ * traction -> clôture standard
+ * @param {Object} position - { entryPrice, direction, stopLoss, takeProfit, positionSize,
+ *                              breakEvenTriggered, trailingActive, profitSecured,
+ *                              peakUnrealizedPnl, entryAtr }
+ * @param {number} currentPrice
+ * @returns {{ updatedPosition: Object, shouldClose: boolean, closeReason: string|null }}
+ */
+export function evaluatePosition(position, currentPrice) {
+  let updatedPosition = position;
+
+  // Phase précoce : ATR break-even + trailing, seulement tant que le PS n'est pas actif
+  if (!updatedPosition.profitSecured) {
+    updatedPosition = checkBreakEven(updatedPosition, currentPrice);
+    updatedPosition = updateTrailingStop(updatedPosition, currentPrice);
+  }
+
+  // Profit Sécurisé progressif : suit le pic, s'active dès que le pic atteint 2$
+  updatedPosition = updateProfitSecured(updatedPosition, currentPrice);
+
+  // Sortie rapide si aucune traction rentable dès le départ (fenêtre de grâce de 30 min)
+  if (checkNoTractionExit(updatedPosition, currentPrice)) {
+    return { updatedPosition, shouldClose: true, closeReason: 'no_traction_exit' };
+  }
+
+  const { shouldClose, reason } = checkExitConditions(updatedPosition, currentPrice);
+
+  return {
+    updatedPosition,
+    shouldClose,
+    closeReason: reason,
+  };
+}
+
+/**
+ * Construit l'objet position initial à l'ouverture (à stocker dans Redis)
+ * @param {number} entryPrice
+ * @param {'BUY'|'SELL'} direction
+ * @param {number} atr - ATR au moment de l'ouverture
+ * @returns {Object} position complète prête à être persistée
+ */
+export function createPosition(entryPrice, direction, atr) {
+  const { stopLoss, takeProfit } = calculateInitialStops(entryPrice, atr, direction);
+
+  return {
+    entryPrice,
+    direction,
+    stopLoss,
+    takeProfit,
+    entryAtr: atr,
+    breakEvenTriggered: false,
+    trailingActive: false,
+    profitSecured: false,
+    profitSecuredPrice: null,
+    peakUnrealizedPnl: 0,
+  };
+}
