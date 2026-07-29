@@ -1,13 +1,17 @@
 // app/api/cron/route.js
-// Cette route est appelée périodiquement par un cron externe (cron-job.org).
-// Elle exécute un cycle complet : récupère le prix, calcule le signal, décide, sauvegarde.
-// Protégée par une clé secrète pour éviter les appels non autorisés.
+// Bot réel XAU/USD — migration V1 -> V2, utilise le même moteur que le shadow trading
+// (scoreEngine + positionManager via shadowEngine.runShadowCycle), validé pendant
+// plusieurs semaines en shadow avant cette bascule.
+// Garde-fou : ferme automatiquement toute position V1 orpheline (sans champs V2)
+// trouvée en ouvrant ce cycle, avant de laisser le V2 décider.
 
 import { Redis } from '@upstash/redis';
 import { Resend } from 'resend';
-import { runTradingCycle, STARTING_CAPITAL } from '../../lib/tradingEngine';
+import { runShadowCycle } from '../../lib/shadowEngine';
+import { STARTING_CAPITAL } from '../../lib/tradingEngine';
 
 const STATE_KEY = 'aria-bot-state';
+const SYMBOL = 'XAU/USD';
 const NOTIFY_EMAIL = process.env.NOTIFY_EMAIL;
 
 function getRedis() {
@@ -32,46 +36,60 @@ async function sendNotification(subject, html) {
   }
 }
 
-async function notifyEvents(prevState, newState) {
-  if (!prevState.openPosition && newState.openPosition) {
-    const p = newState.openPosition;
-    await sendNotification(
-      `🟢 ARIA — Position ${p.direction} ouverte`,
-      `<p><strong>${p.direction}</strong> XAU/USD @ $${p.entryPrice.toFixed(2)}</p>
-       <p>Taille: $${p.positionSize.toFixed(2)} · Confiance: ${(p.confidence * 100).toFixed(0)}%</p>
-       <p>Raisons: ${p.reasons.join(', ')}</p>`
-    );
-  }
-
-  const prevClosedCount = prevState.trades.filter(t => t.status === 'closed').length;
-  const newClosedCount = newState.trades.filter(t => t.status === 'closed').length;
-  if (newClosedCount > prevClosedCount) {
-    const lastClosed = [...newState.trades].filter(t => t.status === 'closed').sort((a, b) => b.closedAt - a.closedAt)[0];
-    const emoji = lastClosed.pnl >= 0 ? '✅' : '❌';
-    await sendNotification(
-      `${emoji} ARIA — Trade clos : ${lastClosed.pnl >= 0 ? '+' : ''}$${lastClosed.pnl.toFixed(2)}`,
-      `<p><strong>${lastClosed.direction}</strong> @ $${lastClosed.entryPrice.toFixed(2)} → $${lastClosed.exitPrice.toFixed(2)}</p>
-       <p>P&L: <strong>${lastClosed.pnl >= 0 ? '+' : ''}$${lastClosed.pnl.toFixed(2)}</strong> (${(lastClosed.pnlPct * 100).toFixed(2)}%)</p>
-       <p>Raison de clôture: ${lastClosed.closeReason}</p>
-       <p>Capital actuel: $${newState.account.balance.toFixed(2)}</p>`
-    );
-  }
+// Twelve Data renvoie le plus récent en premier, close/open/high/low en chaînes.
+// indicators.js attend des objets { open, high, low, close } numériques, triés
+// du plus ancien au plus récent.
+function toCandles(values) {
+  return values
+    .map(v => ({
+      open: parseFloat(v.open),
+      high: parseFloat(v.high),
+      low: parseFloat(v.low),
+      close: parseFloat(v.close),
+      time: v.datetime,
+    }))
+    .reverse();
 }
 
-async function loadState(redis, forceResetParams) {
-  const state = await redis.get(STATE_KEY);
-  if (state && !forceResetParams) return state;
-  if (state && forceResetParams) {
-    return { ...state, params: { rsiOverbought: 70, rsiOversold: 30, confidenceThreshold: 0.4 } };
+async function fetchCandles(symbol, interval, outputsize, apiKey) {
+  const res = await fetch(
+    `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${interval}&outputsize=${outputsize}&apikey=${apiKey}`,
+    { cache: 'no-store' }
+  );
+  const data = await res.json();
+  if (data.status === 'error' || !data.values) {
+    throw new Error(data.message || `Erreur Twelve Data (${interval})`);
   }
+  return { candles: toCandles(data.values), raw: data.values };
+}
+
+function createInitialState() {
   return {
     trades: [],
-    params: { rsiOverbought: 70, rsiOversold: 30, confidenceThreshold: 0.4 },
-    account: { balance: STARTING_CAPITAL, equity: STARTING_CAPITAL },
     openPosition: null,
-    lastSignal: null,
-    riskPauseReason: null,
-    lastCheckedAt: null
+    account: { balance: STARTING_CAPITAL, equity: STARTING_CAPITAL },
+    shadowLog: [],
+    params: { thresholdAdjustment: 0 },
+    lastCheckedAt: null,
+  };
+}
+
+async function loadState(redis) {
+  const state = await redis.get(STATE_KEY);
+  if (!state) return createInitialState();
+
+  // Compatibilité V1 -> V2 : un état V1 n'a pas shadowLog/params.thresholdAdjustment.
+  // On les ajoute sans toucher trades/account — continuité du solde et de l'historique.
+  return {
+    trades: state.trades || [],
+    openPosition: state.openPosition || null,
+    account: state.account || { balance: STARTING_CAPITAL, equity: STARTING_CAPITAL },
+    shadowLog: state.shadowLog || [],
+    params:
+      state.params && state.params.thresholdAdjustment !== undefined
+        ? state.params
+        : { thresholdAdjustment: 0 },
+    lastCheckedAt: state.lastCheckedAt || null,
   };
 }
 
@@ -79,11 +97,79 @@ async function saveState(redis, state) {
   await redis.set(STATE_KEY, state);
 }
 
+// Garde-fou migration : ferme toute position sans champs V2 (stopLoss undefined =
+// ouverte sous l'ancien tradingEngine.js), au prix courant, avant toute décision V2.
+async function closeOrphanV1Position(state, currentPrice) {
+  const position = state.openPosition;
+  if (!position || position.stopLoss !== undefined) return { state, closedTrade: null };
+
+  const pnlPct =
+    position.direction === 'BUY'
+      ? (currentPrice - position.entryPrice) / position.entryPrice
+      : (position.entryPrice - currentPrice) / position.entryPrice;
+  const pnl = position.positionSize * pnlPct;
+
+  const closedTrade = {
+    ...position,
+    status: 'closed',
+    exitPrice: currentPrice,
+    pnl,
+    pnlPct,
+    closedAt: Date.now(),
+    closeReason: 'engine_migration_close',
+  };
+
+  const newState = {
+    ...state,
+    trades: [...state.trades, closedTrade],
+    account: { balance: state.account.balance + pnl, equity: state.account.balance + pnl },
+    openPosition: null,
+  };
+
+  return { state: newState, closedTrade };
+}
+
+async function notifyEvents(prevState, newState, closedMigrationTrade) {
+  if (closedMigrationTrade) {
+    await sendNotification(
+      `🔧 ARIA ${SYMBOL} — Position V1 fermée (migration V2)`,
+      `<p>Position <strong>${closedMigrationTrade.direction}</strong> fermée automatiquement avant bascule vers le moteur V2.</p>
+       <p>P&L: <strong>${closedMigrationTrade.pnl >= 0 ? '+' : ''}$${closedMigrationTrade.pnl.toFixed(2)}</strong></p>`
+    );
+  }
+
+  if (!prevState.openPosition && newState.openPosition) {
+    const p = newState.openPosition;
+    await sendNotification(
+      `📈 ARIA ${SYMBOL} — Position ${p.direction} ouverte (V2)`,
+      `<p><strong>${p.direction}</strong> ${SYMBOL} @ $${p.entryPrice.toFixed(2)}</p>
+       <p>Taille: $${p.positionSize.toFixed(2)} · Score V2: ${p.score?.toFixed(1) ?? '—'}</p>`
+    );
+  }
+
+  const prevClosedCount = prevState.trades.filter(t => t.status === 'closed').length;
+  const newClosedCount = newState.trades.filter(t => t.status === 'closed').length;
+  if (newClosedCount > prevClosedCount) {
+    const lastClosed = [...newState.trades]
+      .filter(t => t.status === 'closed')
+      .sort((a, b) => b.closedAt - a.closedAt)[0];
+    if (lastClosed.closeReason !== 'engine_migration_close') {
+      const emoji = lastClosed.pnl >= 0 ? '✅' : '❌';
+      await sendNotification(
+        `${emoji} ARIA ${SYMBOL} — Trade clos (V2) : ${lastClosed.pnl >= 0 ? '+' : ''}$${lastClosed.pnl.toFixed(2)}`,
+        `<p><strong>${lastClosed.direction}</strong> @ $${lastClosed.entryPrice.toFixed(2)} → $${lastClosed.exitPrice.toFixed(2)}</p>
+         <p>P&L: <strong>${lastClosed.pnl >= 0 ? '+' : ''}$${lastClosed.pnl.toFixed(2)}</strong> (${(lastClosed.pnlPct * 100).toFixed(2)}%)</p>
+         <p>Raison de clôture: ${lastClosed.closeReason}</p>
+         <p>Capital actuel: $${newState.account.balance.toFixed(2)}</p>`
+      );
+    }
+  }
+}
+
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const secret = searchParams.get('secret');
   const apiKey = searchParams.get('apikey');
-  const resetParams = searchParams.get('resetParams') === 'true';
 
   if (secret !== process.env.CRON_SECRET) {
     return Response.json({ error: 'Non autorisé' }, { status: 401 });
@@ -94,51 +180,44 @@ export async function GET(request) {
 
   try {
     const redis = getRedis();
-    const state = await loadState(redis, resetParams);
+    let state = await loadState(redis);
 
-    const marketRes = await fetch(
-      `https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=5min&outputsize=60&apikey=${apiKey}`,
-      { cache: 'no-store' }
-    );
-    const marketData = await marketRes.json();
+    const { candles: candles5min, raw: raw5min } = await fetchCandles(SYMBOL, '5min', 250, apiKey);
 
-    if (marketData.status === 'error' || !marketData.values) {
-      return Response.json({ error: 'Erreur Twelve Data', detail: marketData.message }, { status: 502 });
+    let closedMigrationTrade = null;
+    if (state.openPosition) {
+      const currentPriceForGuard = candles5min[candles5min.length - 1].close;
+      const result = await closeOrphanV1Position(state, currentPriceForGuard);
+      state = result.state;
+      closedMigrationTrade = result.closedTrade;
     }
 
-    const closes = marketData.values.map(v => parseFloat(v.close)).reverse();
-    const currentPrice = closes[closes.length - 1];
-
-    let closes1h = null;
+    let candles1h = [];
     try {
-      const market1hRes = await fetch(
-        `https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=1h&outputsize=30&apikey=${apiKey}`,
-        { cache: 'no-store' }
-      );
-      const market1hData = await market1hRes.json();
-      if (market1hData.values) {
-        closes1h = market1hData.values.map(v => parseFloat(v.close)).reverse();
-      }
+      const result1h = await fetchCandles(SYMBOL, '1h', 60, apiKey);
+      candles1h = result1h.candles;
     } catch {
-      // Pas bloquant
+      // Pas bloquant : la confirmation H1 vaudra simplement 0 point ce cycle-là
     }
 
-    const newState = runTradingCycle(state, closes, currentPrice, closes1h);
-    await notifyEvents(state, newState);
+    const prevState = state;
+    const newState = await runShadowCycle(state, candles5min, candles1h, SYMBOL);
 
-    newState.priceHistory = marketData.values
+    newState.priceHistory = raw5min
       .map(v => ({ time: v.datetime.slice(5, 16), price: parseFloat(v.close) }))
       .reverse();
 
+    await notifyEvents(prevState, newState, closedMigrationTrade);
     await saveState(redis, newState);
 
     return Response.json({
       ok: true,
+      symbol: SYMBOL,
       checkedAt: new Date().toISOString(),
-      signal: newState.lastSignal,
+      migrationClose: closedMigrationTrade,
       openPosition: newState.openPosition,
       balance: newState.account.balance,
-      tradesCount: newState.trades.length
+      tradesCount: newState.trades.length,
     });
   } catch (err) {
     return Response.json({ error: err.message }, { status: 500 });
