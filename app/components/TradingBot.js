@@ -29,11 +29,9 @@ function formatDuration(openedAt, closedAt) {
   return rem > 0 ? `${hours}h${rem}` : `${hours}h`;
 }
 
-// Interprétation factuelle du trade, compatible V1 (ancien tradingEngine.js) et V2
 function interpretTrade(trade) {
   const won = trade.pnl >= 0;
   switch (trade.closeReason) {
-    // --- Raisons V2 ---
     case 'stop_loss':
       return won
         ? "Sortie sur stop-loss avec un léger gain — probablement un mouvement de prix entre deux vérifications."
@@ -47,7 +45,7 @@ function interpretTrade(trade) {
     case 'profit_secured_stop':
       return won
         ? `Gain protégé par le Profit Sécurisé progressif — le SL a suivi le pic de profit atteint (${trade.peakUnrealizedPnl != null ? '$' + trade.peakUnrealizedPnl.toFixed(2) : 'pic non enregistré'}) sans jamais redescendre.`
-        : "Sortie via le Profit Sécurisé malgré une perte finale — cas rare, probablement un décalage d'exécution.";
+        : "Sortie via le Profit Sécurisé malgré une perte finale — cas rare, probablement un décalage d'exécution (vérification périodique, pas en continu).";
     case 'no_traction_exit':
       return "Sortie rapide : le trade n'a montré aucun signe de traction favorable dans les 30 premières minutes et perdait déjà — coupé plus tôt qu'un stop-loss complet.";
     case 'take_profit':
@@ -56,7 +54,6 @@ function interpretTrade(trade) {
       return "Position fermée automatiquement lors de la bascule du moteur V1 vers V2 — garde-fou de migration, pas une décision de trading.";
     case 'manual_close':
       return won ? "Fermé manuellement en profit." : "Fermé manuellement en perte.";
-    // --- Raisons V1 (historique, avant migration) ---
     case 'target':
       return "Trade V1 — fermé sur l'objectif de profit fixe (+1.5%).";
     case 'stop':
@@ -121,6 +118,15 @@ export default function TradingBot({ apiPath = '/api/state', symbolLabel = 'XAU/
 
   const recent20 = closedTrades.slice(-20);
   const recentWinRate = recent20.length > 0 ? Math.round((recent20.filter(t => t.pnl > 0).length / recent20.length) * 1000) / 10 : null;
+
+  // --- Bilan du jour (depuis minuit, heure locale) ---
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  const todayClosed = closedTrades.filter(t => t.closedAt >= startOfToday.getTime());
+  const todayWins = todayClosed.filter(t => t.pnl > 0);
+  const todayLosses = todayClosed.filter(t => t.pnl <= 0);
+  const todayWinAmount = todayWins.reduce((sum, t) => sum + t.pnl, 0);
+  const todayLossAmount = todayLosses.reduce((sum, t) => sum + t.pnl, 0);
 
   const lastCycle = shadowLog.length > 0 ? shadowLog[shadowLog.length - 1] : null;
   const lastV2Result = lastCycle?.v2Result || null;
@@ -188,12 +194,21 @@ export default function TradingBot({ apiPath = '/api/state', symbolLabel = 'XAU/
           ))}
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 24 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 16 }}>
           <StatCard label="Capital" value={`$${account.balance.toFixed(2)}`} accent={account.balance >= STARTING_CAPITAL ? '#4ade80' : '#d4574a'} />
           <StatCard label="P&L Total" value={`${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`} accent={totalPnl >= 0 ? '#4ade80' : '#d4574a'} />
           <StatCard label="Win Rate" value={`${winRate}${winRate !== '—' ? '%' : ''}`} accent="#d4a843" />
           <StatCard label="Trades clos" value={closedTrades.length} accent="#9aa3af" />
           <StatCard label="Décalage seuil (V2)" value={`${thresholdAdjustment >= 0 ? '+' : ''}${thresholdAdjustment}`} accent="#9aa3af" />
+        </div>
+
+        <div style={{ marginBottom: 24 }}>
+          <div className="label-font" style={{ fontSize: 11, color: '#6b7685', marginBottom: 10, letterSpacing: 0.5 }}>BILAN DU JOUR</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 }}>
+            <TodayStatCard label="Trades effectués" count={todayClosed.length} accent="#9aa3af" />
+            <TodayStatCard label="Gagnants" count={todayWins.length} amount={todayWinAmount} accent="#4ade80" />
+            <TodayStatCard label="Perdants" count={todayLosses.length} amount={todayLossAmount} accent="#d4574a" />
+          </div>
         </div>
 
         {activeTab === 'live' && (
@@ -370,6 +385,18 @@ function StatCard({ label, value, accent }) {
     <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 10, padding: '14px 16px' }}>
       <div className="label-font" style={{ fontSize: 10, color: '#6b7685', letterSpacing: 0.5, marginBottom: 6, textTransform: 'uppercase' }}>{label}</div>
       <div style={{ fontSize: 18, fontWeight: 700, color: accent }}>{value}</div>
+    </div>
+  );
+}
+
+function TodayStatCard({ label, count, amount, accent }) {
+  return (
+    <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 10, padding: '14px 16px' }}>
+      <div className="label-font" style={{ fontSize: 10, color: '#6b7685', letterSpacing: 0.5, marginBottom: 6, textTransform: 'uppercase' }}>{label}</div>
+      <div style={{ fontSize: 18, fontWeight: 700, color: accent }}>{count}</div>
+      {amount !== undefined && (
+        <div className="label-font" style={{ fontSize: 12, color: accent, marginTop: 2 }}>{amount >= 0 ? '+' : ''}${amount.toFixed(2)}</div>
+      )}
     </div>
   );
 }
