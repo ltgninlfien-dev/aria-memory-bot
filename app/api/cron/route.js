@@ -1,9 +1,9 @@
 // app/api/cron/route.js
-// Bot réel XAU/USD — migration V1 -> V2, utilise le même moteur que le shadow trading
-// (scoreEngine + positionManager via shadowEngine.runShadowCycle), validé pendant
-// plusieurs semaines en shadow avant cette bascule.
+// Bot réel XAU/USD — moteur V2 (scoreEngine + positionManager via shadowEngine.runShadowCycle).
 // Garde-fou : ferme automatiquement toute position V1 orpheline (sans champs V2)
 // trouvée en ouvrant ce cycle, avant de laisser le V2 décider.
+// Envoie un signal de vie à Healthchecks.io à chaque cycle réussi, pour détecter
+// automatiquement si ce cron s'arrête de tourner (désactivé, quota épuisé, etc.).
 
 import { Redis } from '@upstash/redis';
 import { Resend } from 'resend';
@@ -13,6 +13,7 @@ import { STARTING_CAPITAL } from '../../lib/tradingEngine';
 const STATE_KEY = 'aria-bot-state';
 const SYMBOL = 'XAU/USD';
 const NOTIFY_EMAIL = process.env.NOTIFY_EMAIL;
+const HEALTHCHECK_URL = 'https://hc-ping.com/9e9d660f-be42-4010-8ad0-87bece495cf7';
 
 function getRedis() {
   return new Redis({
@@ -33,6 +34,17 @@ async function sendNotification(subject, html) {
     });
   } catch (err) {
     console.error('Notification email échouée:', err.message);
+  }
+}
+
+// Signal de vie envoyé à Healthchecks.io à chaque cycle réussi — permet de détecter
+// automatiquement si le cron s'arrête de tourner (désactivé, quota épuisé, etc.),
+// sans dépendre de notre propre code pour émettre l'alerte.
+async function pingHealthcheck() {
+  try {
+    await fetch(HEALTHCHECK_URL, { cache: 'no-store' });
+  } catch {
+    // Jamais bloquant : un échec de ping ne doit pas interrompre le cycle de trading
   }
 }
 
@@ -78,8 +90,6 @@ async function loadState(redis) {
   const state = await redis.get(STATE_KEY);
   if (!state) return createInitialState();
 
-  // Compatibilité V1 -> V2 : un état V1 n'a pas shadowLog/params.thresholdAdjustment.
-  // On les ajoute sans toucher trades/account — continuité du solde et de l'historique.
   return {
     trades: state.trades || [],
     openPosition: state.openPosition || null,
@@ -209,6 +219,7 @@ export async function GET(request) {
 
     await notifyEvents(prevState, newState, closedMigrationTrade);
     await saveState(redis, newState);
+    await pingHealthcheck();
 
     return Response.json({
       ok: true,
