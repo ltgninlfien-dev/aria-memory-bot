@@ -29,6 +29,31 @@ function formatDuration(openedAt, closedAt) {
   return rem > 0 ? `${hours}h${rem}` : `${hours}h`;
 }
 
+// Bornes de début de journée / semaine (lundi 00h) / mois, en heure locale
+function getPeriodBounds() {
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+  const dayOfWeek = startOfToday.getDay(); // 0 = dimanche
+  const diffToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+  const startOfWeek = new Date(startOfToday);
+  startOfWeek.setDate(startOfWeek.getDate() - diffToMonday);
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+  return {
+    startOfToday: startOfToday.getTime(),
+    startOfWeek: startOfWeek.getTime(),
+    startOfMonth: startOfMonth.getTime(),
+  };
+}
+
+function computePeriodStats(closedTrades, startTime) {
+  const periodTrades = closedTrades.filter(t => t.closedAt >= startTime);
+  if (periodTrades.length === 0) return { count: 0, totalPnl: 0, winRate: 0 };
+  const wins = periodTrades.filter(t => t.pnl > 0).length;
+  const totalPnl = periodTrades.reduce((sum, t) => sum + t.pnl, 0);
+  const winRate = Math.round((wins / periodTrades.length) * 1000) / 10;
+  return { count: periodTrades.length, totalPnl, winRate };
+}
+
 function interpretTrade(trade) {
   const won = trade.pnl >= 0;
   switch (trade.closeReason) {
@@ -63,6 +88,27 @@ function interpretTrade(trade) {
     default:
       return "Raison de clôture non reconnue.";
   }
+}
+
+function TradeRow({ t }) {
+  return (
+    <div style={{ padding: '14px 20px', borderBottom: '1px solid #161c26' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 6 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: t.direction === 'BUY' ? '#4ade80' : '#d4574a' }}>{t.direction}</span>
+          <span className="label-font" style={{ fontSize: 12, color: '#9aa3af' }}>@ ${t.entryPrice.toFixed(2)} → ${t.exitPrice.toFixed(2)}</span>
+          <span className="label-font" style={{ fontSize: 10, color: '#6b7685', padding: '2px 6px', background: '#0a0e14', borderRadius: 4 }}>{t.closeReason}</span>
+        </div>
+        <span style={{ fontSize: 13, fontWeight: 600, color: t.pnl >= 0 ? '#4ade80' : '#d4574a' }}>{t.pnl >= 0 ? '+' : ''}${t.pnl.toFixed(2)}</span>
+      </div>
+      {t.openedAt && t.closedAt && (
+        <div className="label-font" style={{ fontSize: 11, color: '#6b7685', marginBottom: 6 }}>
+          Ouvert le {new Date(t.openedAt).toLocaleString('fr-FR')} &middot; Fermé le {new Date(t.closedAt).toLocaleString('fr-FR')} &middot; Durée : {formatDuration(t.openedAt, t.closedAt)}
+        </div>
+      )}
+      <div className="label-font" style={{ fontSize: 12, color: '#9aa3af', lineHeight: 1.5, fontStyle: 'italic' }}>{interpretTrade(t)}</div>
+    </div>
+  );
 }
 
 export default function TradingBot({ apiPath = '/api/state', symbolLabel = 'XAU/USD' }) {
@@ -119,14 +165,14 @@ export default function TradingBot({ apiPath = '/api/state', symbolLabel = 'XAU/
   const recent20 = closedTrades.slice(-20);
   const recentWinRate = recent20.length > 0 ? Math.round((recent20.filter(t => t.pnl > 0).length / recent20.length) * 1000) / 10 : null;
 
-  // --- Bilan du jour (depuis minuit, heure locale) ---
-  const startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
-  const todayClosed = closedTrades.filter(t => t.closedAt >= startOfToday.getTime());
-  const todayWins = todayClosed.filter(t => t.pnl > 0);
-  const todayLosses = todayClosed.filter(t => t.pnl <= 0);
-  const todayWinAmount = todayWins.reduce((sum, t) => sum + t.pnl, 0);
-  const todayLossAmount = todayLosses.reduce((sum, t) => sum + t.pnl, 0);
+  // --- Bilan par période ---
+  const { startOfToday, startOfWeek, startOfMonth } = getPeriodBounds();
+  const periodSummary = {
+    today: computePeriodStats(closedTrades, startOfToday),
+    thisWeek: computePeriodStats(closedTrades, startOfWeek),
+    thisMonth: computePeriodStats(closedTrades, startOfMonth),
+  };
+  const todayClosedTrades = [...closedTrades].filter(t => t.closedAt >= startOfToday).reverse();
 
   const lastCycle = shadowLog.length > 0 ? shadowLog[shadowLog.length - 1] : null;
   const lastV2Result = lastCycle?.v2Result || null;
@@ -203,11 +249,11 @@ export default function TradingBot({ apiPath = '/api/state', symbolLabel = 'XAU/
         </div>
 
         <div style={{ marginBottom: 24 }}>
-          <div className="label-font" style={{ fontSize: 11, color: '#6b7685', marginBottom: 10, letterSpacing: 0.5 }}>BILAN DU JOUR</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 }}>
-            <TodayStatCard label="Trades effectués" count={todayClosed.length} accent="#9aa3af" />
-            <TodayStatCard label="Gagnants" count={todayWins.length} amount={todayWinAmount} accent="#4ade80" />
-            <TodayStatCard label="Perdants" count={todayLosses.length} amount={todayLossAmount} accent="#d4574a" />
+          <div className="label-font" style={{ fontSize: 11, color: '#6b7685', marginBottom: 10, letterSpacing: 0.5 }}>BILAN PAR PÉRIODE</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+            <PeriodCard label="Aujourd'hui" data={periodSummary.today} />
+            <PeriodCard label="Cette semaine" data={periodSummary.thisWeek} />
+            <PeriodCard label="Ce mois" data={periodSummary.thisMonth} />
           </div>
         </div>
 
@@ -231,7 +277,7 @@ export default function TradingBot({ apiPath = '/api/state', symbolLabel = 'XAU/
               </div>
             )}
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 20 }}>
               <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 12, padding: 20 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
                   <TrendingUp size={15} color="#d4a843" />
@@ -295,6 +341,18 @@ export default function TradingBot({ apiPath = '/api/state', symbolLabel = 'XAU/
                   </>
                 ) : <div className="label-font" style={{ fontSize: 13, color: '#6b7685' }}>Aucune position. Le serveur attend un signal fiable.</div>}
               </div>
+            </div>
+
+            <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 12, overflow: 'hidden' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '14px 20px', borderBottom: '1px solid #1f2733' }}>
+                <History size={15} color="#d4a843" />
+                <span className="label-font" style={{ fontSize: 12, color: '#6b7685', letterSpacing: 0.5 }}>TRADES DU JOUR ({todayClosedTrades.length})</span>
+              </div>
+              {todayClosedTrades.length === 0 ? (
+                <div className="label-font" style={{ padding: 24, fontSize: 13, color: '#6b7685' }}>Aucun trade clos aujourd'hui pour l'instant.</div>
+              ) : (
+                todayClosedTrades.map(t => <TradeRow key={t.id} t={t} />)
+              )}
             </div>
           </>
         )}
@@ -389,14 +447,23 @@ function StatCard({ label, value, accent }) {
   );
 }
 
-function TodayStatCard({ label, count, amount, accent }) {
+function PeriodCard({ label, data }) {
+  if (!data || data.count === 0) {
+    return (
+      <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 10, padding: '12px 14px' }}>
+        <div className="label-font" style={{ fontSize: 10, color: '#6b7685', marginBottom: 6 }}>{label}</div>
+        <div className="label-font" style={{ fontSize: 12, color: '#6b7685' }}>Aucun trade</div>
+      </div>
+    );
+  }
+
   return (
-    <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 10, padding: '14px 16px' }}>
-      <div className="label-font" style={{ fontSize: 10, color: '#6b7685', letterSpacing: 0.5, marginBottom: 6, textTransform: 'uppercase' }}>{label}</div>
-      <div style={{ fontSize: 18, fontWeight: 700, color: accent }}>{count}</div>
-      {amount !== undefined && (
-        <div className="label-font" style={{ fontSize: 12, color: accent, marginTop: 2 }}>{amount >= 0 ? '+' : ''}${amount.toFixed(2)}</div>
-      )}
+    <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 10, padding: '12px 14px' }}>
+      <div className="label-font" style={{ fontSize: 10, color: '#6b7685', marginBottom: 6 }}>{label}</div>
+      <div style={{ fontSize: 15, fontWeight: 700, color: data.totalPnl >= 0 ? '#4ade80' : '#d4574a', marginBottom: 2 }}>
+        {data.totalPnl >= 0 ? '+' : ''}${data.totalPnl.toFixed(2)}
+      </div>
+      <div className="label-font" style={{ fontSize: 10, color: '#6b7685' }}>{data.count} trade{data.count > 1 ? 's' : ''} &middot; {data.winRate}% win</div>
     </div>
   );
 }
