@@ -1,476 +1,130 @@
 "use client";
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
-import { TrendingUp, TrendingDown, Target, RefreshCw, Server, ShieldCheck, History, Brain, AlertTriangle } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Brain, TrendingUp, Activity, Trophy, ChevronRight, Server } from 'lucide-react';
 
-const STARTING_CAPITAL = 10000;
-const REFRESH_INTERVAL = 30000;
+const CARD_ACCENT = '#D4AF37';
+const CARD_ACCENT_DARK = '#B8860B';
 
-const STATUS_LABELS = {
-  sl_fixe: { label: 'Stop-loss fixe', color: '#d4574a' },
-  breakeven_actif: { label: 'Break-even actif', color: '#d4a843' },
-  trailing_actif: { label: 'Trailing actif', color: '#4ade80' },
-  profit_securise: { label: 'Profit sécurisé', color: '#4ade80' },
-};
-
-function getPositionStatus(position) {
-  if (!position) return null;
-  if (position.profitSecured) return 'profit_securise';
-  if (position.trailingActive) return 'trailing_actif';
-  if (position.breakEvenTriggered) return 'breakeven_actif';
-  return 'sl_fixe';
-}
-
-function formatDuration(openedAt, closedAt) {
-  const minutes = Math.round((closedAt - openedAt) / 60000);
-  if (minutes < 60) return `${minutes}min`;
-  const hours = Math.floor(minutes / 60);
-  const rem = minutes % 60;
-  return rem > 0 ? `${hours}h${rem}` : `${hours}h`;
-}
-
-function getPeriodBounds() {
-  const now = new Date();
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
-  const dayOfWeek = startOfToday.getDay();
-  const diffToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-  const startOfWeek = new Date(startOfToday);
-  startOfWeek.setDate(startOfWeek.getDate() - diffToMonday);
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
-  return {
-    startOfToday: startOfToday.getTime(),
-    startOfWeek: startOfWeek.getTime(),
-    startOfMonth: startOfMonth.getTime(),
-  };
-}
-
-function computePeriodStats(closedTrades, startTime) {
-  const periodTrades = closedTrades.filter(t => t.closedAt >= startTime);
-  if (periodTrades.length === 0) return { count: 0, totalPnl: 0, winRate: 0 };
-  const wins = periodTrades.filter(t => t.pnl > 0).length;
-  const totalPnl = periodTrades.reduce((sum, t) => sum + t.pnl, 0);
-  const winRate = Math.round((wins / periodTrades.length) * 1000) / 10;
-  return { count: periodTrades.length, totalPnl, winRate };
-}
-
-function interpretTrade(trade) {
-  const won = trade.pnl >= 0;
-  switch (trade.closeReason) {
-    case 'stop_loss':
-      return won
-        ? "Sortie sur stop-loss avec un léger gain — probablement un mouvement de prix entre deux vérifications."
-        : "Sortie sur stop-loss initial (1.5×ATR). Le marché est allé à l'encontre de la position sans jamais atteindre le seuil de break-even.";
-    case 'breakeven_stop':
-      return "Position sortie proche de l'équilibre : le trade est parti en profit, le stop a été remonté à l'entrée, puis le marché s'est retourné.";
-    case 'trailing_stop':
-      return won
-        ? "Gain sécurisé par le trailing stop ATR après un mouvement favorable prolongé."
-        : "Le trailing s'était activé mais le marché s'est retourné plus vite que le stop ne pouvait suivre.";
-    case 'profit_secured_stop':
-      return won
-        ? `Gain protégé par le Profit Sécurisé progressif — le SL a suivi le pic de profit atteint (${trade.peakUnrealizedPnl != null ? '$' + trade.peakUnrealizedPnl.toFixed(2) : 'pic non enregistré'}) sans jamais redescendre.`
-        : "Sortie via le Profit Sécurisé malgré une perte finale — cas rare, probablement un décalage d'exécution (vérification périodique, pas en continu).";
-    case 'no_traction_exit':
-      return "Sortie rapide : le trade n'a montré aucun signe de traction favorable dans les 30 premières minutes et perdait déjà — coupé plus tôt qu'un stop-loss complet.";
-    case 'take_profit':
-      return "Take-profit fixe atteint (3×ATR) avant que le trailing ou le PS n'ait eu l'occasion de s'activer.";
-    case 'engine_migration_close':
-      return "Position fermée automatiquement lors de la bascule du moteur V1 vers V2 — garde-fou de migration, pas une décision de trading.";
-    case 'manual_close':
-      return won ? "Fermé manuellement en profit." : "Fermé manuellement en perte.";
-    case 'target':
-      return "Trade V1 — fermé sur l'objectif de profit fixe (+1.5%).";
-    case 'stop':
-      return "Trade V1 — fermé sur le stop-loss fixe (-0.8%).";
-    case 'signal_reversal':
-      return "Trade V1 — fermé sur retournement de signal confirmé sur 2 cycles consécutifs.";
-    default:
-      return "Raison de clôture non reconnue.";
-  }
-}
-
-function TradeRow({ t }) {
-  return (
-    <div style={{ padding: '14px 20px', borderBottom: '1px solid #161c26' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 6 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: t.direction === 'BUY' ? '#4ade80' : '#d4574a' }}>{t.direction}</span>
-          <span className="label-font" style={{ fontSize: 12, color: '#9aa3af' }}>@ ${t.entryPrice.toFixed(2)} → ${t.exitPrice.toFixed(2)}</span>
-          <span className="label-font" style={{ fontSize: 10, color: '#6b7685', padding: '2px 6px', background: '#0a0e14', borderRadius: 4 }}>{t.closeReason}</span>
-        </div>
-        <span style={{ fontSize: 13, fontWeight: 600, color: t.pnl >= 0 ? '#4ade80' : '#d4574a' }}>{t.pnl >= 0 ? '+' : ''}${t.pnl.toFixed(2)}</span>
-      </div>
-      {t.openedAt && t.closedAt && (
-        <div className="label-font" style={{ fontSize: 11, color: '#6b7685', marginBottom: 6 }}>
-          Ouvert le {new Date(t.openedAt).toLocaleString('fr-FR')} &middot; Fermé le {new Date(t.closedAt).toLocaleString('fr-FR')} &middot; Durée : {formatDuration(t.openedAt, t.closedAt)}
-        </div>
-      )}
-      <div className="label-font" style={{ fontSize: 12, color: '#9aa3af', lineHeight: 1.5, fontStyle: 'italic' }}>{interpretTrade(t)}</div>
-    </div>
-  );
-}
-
-export default function TradingBot({ apiPath = '/api/state', symbolLabel = 'XAU/USD' }) {
-  const [state, setState] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [activeTab, setActiveTab] = useState('live');
-  const intervalRef = useRef(null);
-
-  const fetchState = useCallback(async () => {
-    try {
-      const res = await fetch(apiPath, { cache: 'no-store' });
-      const data = await res.json();
-      setState(data);
-      setError(null);
-    } catch (e) {
-      setError('Impossible de contacter le serveur : ' + e.message);
-    } finally {
-      setLoading(false);
-    }
-  }, [apiPath]);
+function useReadOnly(path) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState(false);
 
   useEffect(() => {
-    fetchState();
-    intervalRef.current = setInterval(fetchState, REFRESH_INTERVAL);
-    return () => clearInterval(intervalRef.current);
-  }, [fetchState]);
+    let cancelled = false;
+    fetch(path, { cache: 'no-store' })
+      .then(res => res.json())
+      .then(json => { if (!cancelled) setData(json); })
+      .catch(() => { if (!cancelled) setError(true); });
+    return () => { cancelled = true; };
+  }, [path]);
 
-  if (loading) {
-    return (
-      <div style={{ minHeight: '100vh', background: '#0a0e14', color: '#e8e6e1', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: "'IBM Plex Mono', monospace" }}>
-        <div>Chargement...</div>
+  return { data, error };
+}
+
+function Card({ href, icon, title, subtitle, children }) {
+  return (
+    <a href={href} style={{
+      display: 'block', textDecoration: 'none', color: 'inherit',
+      background: '#1A1A22', border: '1px solid #2c2c38', borderRadius: 14,
+      padding: 20, transition: 'border-color 0.15s'
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{
+            width: 34, height: 34, borderRadius: 8, background: '#242430',
+            display: 'flex', alignItems: 'center', justifyContent: 'center'
+          }}>
+            {icon}
+          </div>
+          <div>
+            <div className="body-font" style={{ fontSize: 15, fontWeight: 700, color: '#FFFFFF' }}>{title}</div>
+            <div className="body-font" style={{ fontSize: 11, color: '#8a8a95' }}>{subtitle}</div>
+          </div>
+        </div>
+        <ChevronRight size={18} color="#8a8a95" />
       </div>
-    );
-  }
+      {children}
+    </a>
+  );
+}
 
-  const trades = state?.trades || [];
-  const account = state?.account || { balance: STARTING_CAPITAL };
-  const openPosition = state?.openPosition || null;
-  const lastCheckedAt = state?.lastCheckedAt || null;
-  const priceHistory = state?.priceHistory || [];
-  const shadowLog = state?.shadowLog || [];
-  const thresholdAdjustment = state?.params?.thresholdAdjustment ?? 0;
+function MiniStat({ label, value, accent }) {
+  return (
+    <div>
+      <div className="body-font" style={{ fontSize: 10, color: '#8a8a95', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 15, fontWeight: 700, color: accent || '#FFFFFF' }}>{value}</div>
+    </div>
+  );
+}
 
-  const closedTrades = trades.filter(t => t.status === 'closed');
-  const winRate = closedTrades.length > 0 ? (closedTrades.filter(t => t.pnl > 0).length / closedTrades.length * 100).toFixed(1) : '—';
-  const totalPnl = closedTrades.reduce((sum, t) => sum + t.pnl, 0);
-  const equityCurve = closedTrades.reduce((acc, t) => {
-    const last = acc.length > 0 ? acc[acc.length - 1].equity : STARTING_CAPITAL;
-    acc.push({ trade: acc.length + 1, equity: last + t.pnl });
-    return acc;
-  }, [{ trade: 0, equity: STARTING_CAPITAL }]);
+export default function Hub() {
+  const { data: xau } = useReadOnly('/api/state');
+  const { data: eur } = useReadOnly('/api/state-eurusd');
+  const { data: shadowXau } = useReadOnly('/api/shadow-stats?symbol=XAU/USD');
+  const { data: shadowEur } = useReadOnly('/api/shadow-stats?symbol=EUR/USD');
+  const { data: predictions } = useReadOnly('/api/predictions');
 
-  const recent20 = closedTrades.slice(-20);
-  const recentWinRate = recent20.length > 0 ? Math.round((recent20.filter(t => t.pnl > 0).length / recent20.length) * 1000) / 10 : null;
-
-  const { startOfToday, startOfWeek, startOfMonth } = getPeriodBounds();
-  const periodSummary = {
-    today: computePeriodStats(closedTrades, startOfToday),
-    thisWeek: computePeriodStats(closedTrades, startOfWeek),
-    thisMonth: computePeriodStats(closedTrades, startOfMonth),
-  };
-  const todayClosedTrades = [...closedTrades].filter(t => t.closedAt >= startOfToday).reverse();
-
-  const lastCycle = shadowLog.length > 0 ? shadowLog[shadowLog.length - 1] : null;
-  const lastV2Result = lastCycle?.v2Result || null;
-
-  const minutesSinceCheck = lastCheckedAt ? Math.round((Date.now() - lastCheckedAt) / 60000) : null;
-  const positionStatusKey = getPositionStatus(openPosition);
-  const statusInfo = positionStatusKey ? STATUS_LABELS[positionStatusKey] : null;
-
-  const currentPrice = priceHistory.length > 0 ? priceHistory[priceHistory.length - 1].price : null;
-  const livePnl = openPosition && currentPrice !== null
-    ? (() => {
-        const pnlPct = openPosition.direction === 'BUY'
-          ? (currentPrice - openPosition.entryPrice) / openPosition.entryPrice
-          : (openPosition.entryPrice - currentPrice) / openPosition.entryPrice;
-        return { pnlPct, pnl: openPosition.positionSize * pnlPct };
-      })()
-    : null;
-
-  const showTP = openPosition && !openPosition.trailingActive && !openPosition.profitSecured;
+  const fmtMoney = (v) => (typeof v === 'number' ? `$${v.toFixed(2)}` : '—');
 
   return (
-    <div style={{ minHeight: '100vh', background: '#0a0e14', color: '#e8e6e1', fontFamily: "'IBM Plex Mono', 'Courier New', monospace" }}>
+    <div style={{ minHeight: '100vh', background: '#0B0B0F', color: '#FFFFFF', fontFamily: "'Montserrat', sans-serif" }}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Montserrat:wght@400;500;600;700&display=swap');
         * { box-sizing: border-box; }
-        .label-font { font-family: 'IBM Plex Sans', sans-serif; }
-        button:focus-visible { outline: 2px solid #d4a843; outline-offset: 2px; }
+        .body-font { font-family: 'Montserrat', sans-serif; }
+        .title-font { font-family: 'Cinzel', serif; letter-spacing: 0.5px; }
+        a:active { opacity: 0.8; }
       `}</style>
 
-      <div style={{ borderBottom: '1px solid #1f2733', padding: '20px 28px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          <div style={{ width: 38, height: 38, borderRadius: 8, background: 'linear-gradient(135deg, #d4a843, #8a6d1f)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <Target size={20} color="#0a0e14" />
-          </div>
-          <div>
-            <div className="label-font" style={{ fontSize: 17, fontWeight: 700, letterSpacing: 0.3 }}>AURUM AI <span style={{ color: '#d4a843' }}>90MM</span></div>
-            <div className="label-font" style={{ fontSize: 11, color: '#6b7685', letterSpacing: 1 }}>{symbolLabel} &middot; BOT RÉEL</div>
-          </div>
+      <div style={{ borderBottom: '1px solid #2c2c38', padding: '24px 28px', display: 'flex', alignItems: 'center', gap: 14 }}>
+        <div style={{
+          width: 40, height: 40, borderRadius: 9, background: `linear-gradient(135deg, ${CARD_ACCENT}, ${CARD_ACCENT_DARK})`,
+          display: 'flex', alignItems: 'center', justifyContent: 'center'
+        }}>
+          <Brain size={21} color="#0B0B0F" />
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <Server size={14} color="#4ade80" />
-          <span className="label-font" style={{ fontSize: 12, color: '#9aa3af' }}>
-            {minutesSinceCheck !== null ? `Dernière vérif. : il y a ${minutesSinceCheck} min` : 'En attente du premier cycle serveur'}
-          </span>
-          <button onClick={fetchState} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4 }}>
-            <RefreshCw size={14} color="#6b7685" />
-          </button>
+        <div>
+          <div className="title-font" style={{ fontSize: 19, fontWeight: 700 }}>AURUM AI <span style={{ color: CARD_ACCENT }}>90MM</span></div>
+          <div className="body-font" style={{ fontSize: 11, color: '#8a8a95', letterSpacing: 1 }}>NAVIGATION CENTRALE</div>
         </div>
       </div>
 
-      <div style={{ padding: '24px 28px', maxWidth: 1200, margin: '0 auto' }}>
-        {error && (
-          <div style={{ background: '#2a1318', border: '1px solid #4a2229', borderRadius: 8, padding: '12px 16px', marginBottom: 20, display: 'flex', alignItems: 'center', gap: 10 }}>
-            <AlertTriangle size={16} color="#d4574a" />
-            <span className="label-font" style={{ fontSize: 13, color: '#e8a8a8' }}>{error}</span>
-          </div>
-        )}
+      <div style={{ padding: '24px 20px', maxWidth: 640, margin: '0 auto', display: 'grid', gap: 14 }}>
 
-        <div style={{ display: 'flex', gap: 4, background: '#10151f', border: '1px solid #1f2733', borderRadius: 8, padding: 4, marginBottom: 20, width: 'fit-content' }}>
-          {['live', 'historique', 'memoire'].map(tab => (
-            <button key={tab} onClick={() => setActiveTab(tab)}
-              style={{ padding: '8px 16px', background: activeTab === tab ? '#1f2733' : 'transparent', border: 'none', borderRadius: 6, color: activeTab === tab ? '#e8e6e1' : '#6b7685', fontFamily: 'IBM Plex Sans', fontSize: 12, fontWeight: 600, cursor: 'pointer', textTransform: 'capitalize' }}>
-              {tab}
-            </button>
-          ))}
+        <Card href="/xauusd" icon={<TrendingUp size={17} color={CARD_ACCENT} />} title="XAU/USD" subtitle="Bot réel · V1/V2">
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <MiniStat label="Capital" value={fmtMoney(xau?.account?.balance)} accent="#4ade80" />
+            <MiniStat label="Position" value={xau?.openPosition ? xau.openPosition.direction : 'Aucune'} accent={xau?.openPosition ? '#4a90d9' : '#8a8a95'} />
+          </div>
+        </Card>
+
+        <Card href="/eurusd" icon={<TrendingUp size={17} color={CARD_ACCENT} />} title="EUR/USD" subtitle="Bot réel · V1/V2">
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <MiniStat label="Capital" value={fmtMoney(eur?.account?.balance)} accent="#4ade80" />
+            <MiniStat label="Position" value={eur?.openPosition ? eur.openPosition.direction : 'Aucune'} accent={eur?.openPosition ? '#4a90d9' : '#8a8a95'} />
+          </div>
+        </Card>
+
+        <Card href="/shadow-dashboard" icon={<Activity size={17} color={CARD_ACCENT} />} title="Shadow V2" subtitle="XAU/USD + EUR/USD · Simulation">
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <MiniStat label="XAU Win Rate" value={shadowXau?.winRate != null ? `${shadowXau.winRate}%` : '—'} />
+            <MiniStat label="EUR Win Rate" value={shadowEur?.winRate != null ? `${shadowEur.winRate}%` : '—'} />
+          </div>
+        </Card>
+
+        <Card href="/predictions-dashboard" icon={<Trophy size={17} color={CARD_ACCENT} />} title="PrédireFoot" subtitle="Prédictions du jour">
+          <MiniStat
+            label="Matchs analysés"
+            value={Array.isArray(predictions?.matches) ? predictions.matches.length : (predictions?.count ?? '—')}
+          />
+        </Card>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'center', marginTop: 8 }}>
+          <Server size={12} color="#4ade80" />
+          <span className="body-font" style={{ fontSize: 11, color: '#8a8a95' }}>Aperçu en lecture seule — aucun appel Twelve Data</span>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 16 }}>
-          <StatCard label="Capital" value={`$${account.balance.toFixed(2)}`} accent={account.balance >= STARTING_CAPITAL ? '#4ade80' : '#d4574a'} />
-          <StatCard label="P&L Total" value={`${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`} accent={totalPnl >= 0 ? '#4ade80' : '#d4574a'} />
-          <StatCard label="Win Rate" value={`${winRate}${winRate !== '—' ? '%' : ''}`} accent="#d4a843" />
-          <StatCard label="Trades clos" value={closedTrades.length} accent="#9aa3af" />
-          <StatCard label="Décalage seuil (V2)" value={`${thresholdAdjustment >= 0 ? '+' : ''}${thresholdAdjustment}`} accent="#9aa3af" />
-        </div>
-
-        <div style={{ marginBottom: 24 }}>
-          <div className="label-font" style={{ fontSize: 11, color: '#6b7685', marginBottom: 10, letterSpacing: 0.5 }}>BILAN PAR PÉRIODE</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
-            <PeriodCard label="Aujourd'hui" data={periodSummary.today} />
-            <PeriodCard label="Cette semaine" data={periodSummary.thisWeek} />
-            <PeriodCard label="Ce mois" data={periodSummary.thisMonth} />
-          </div>
-        </div>
-
-        {activeTab === 'live' && (
-          <>
-            {priceHistory.length > 0 && (
-              <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 12, padding: 20, marginBottom: 20 }}>
-                <div className="label-font" style={{ fontSize: 12, color: '#6b7685', marginBottom: 14, letterSpacing: 0.5 }}>{symbolLabel} &middot; 5 MIN (dernier cycle serveur)</div>
-                <ResponsiveContainer width="100%" height={240}>
-                  <LineChart data={priceHistory}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#1f2733" />
-                    <XAxis dataKey="time" stroke="#4a5568" fontSize={10} tick={{ fill: '#6b7685' }} />
-                    <YAxis domain={['auto', 'auto']} stroke="#4a5568" fontSize={10} tick={{ fill: '#6b7685' }} />
-                    <Tooltip contentStyle={{ background: '#0a0e14', border: '1px solid #2a3441', borderRadius: 8, fontSize: 12 }} />
-                    <Line type="monotone" dataKey="price" stroke="#d4a843" strokeWidth={2} dot={false} />
-                    {openPosition && <ReferenceLine y={openPosition.entryPrice} stroke="#4a90d9" strokeDasharray="4 4" label={{ value: 'Entrée', fill: '#4a90d9', fontSize: 10 }} />}
-                    {openPosition && <ReferenceLine y={openPosition.stopLoss} stroke="#d4574a" strokeDasharray="4 4" label={{ value: 'SL', fill: '#d4574a', fontSize: 10 }} />}
-                    {showTP && <ReferenceLine y={openPosition.takeProfit} stroke="#4ade80" strokeDasharray="4 4" label={{ value: 'TP', fill: '#4ade80', fontSize: 10 }} />}
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 20 }}>
-              <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 12, padding: 20 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
-                  <TrendingUp size={15} color="#d4a843" />
-                  <span className="label-font" style={{ fontSize: 12, color: '#6b7685', letterSpacing: 0.5 }}>DERNIER SIGNAL (serveur)</span>
-                </div>
-                {lastV2Result ? (
-                  <>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-                      {lastV2Result.direction === 'BUY' ? <TrendingUp color="#4ade80" size={22} /> : <TrendingDown color="#d4574a" size={22} />}
-                      <span style={{ fontSize: 20, fontWeight: 700, color: lastV2Result.direction === 'BUY' ? '#4ade80' : '#d4574a' }}>{lastV2Result.direction}</span>
-                      <span className="label-font" style={{ fontSize: 11, color: '#6b7685' }}>score {lastV2Result.score?.toFixed(1)} / seuil {lastV2Result.threshold}</span>
-                    </div>
-                    <div className="label-font" style={{ fontSize: 12, color: '#9aa3af' }}>ADX : {lastV2Result.adx != null ? lastV2Result.adx.toFixed(1) : '—'}</div>
-                    {lastV2Result.blockedByRangeRegime && <div className="label-font" style={{ fontSize: 12, color: '#d4a843', marginTop: 4 }}>⚠ Bloqué : régime range (ADX≤20)</div>}
-                    {lastV2Result.blockedByNoMomentum && <div className="label-font" style={{ fontSize: 12, color: '#d4a843', marginTop: 4 }}>⚠ Bloqué : pas de momentum d'entrée</div>}
-                  </>
-                ) : <div className="label-font" style={{ fontSize: 13, color: '#6b7685' }}>Pas encore de cycle enregistré.</div>}
-              </div>
-
-              <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 12, padding: 20 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
-                  <Target size={15} color="#d4a843" />
-                  <span className="label-font" style={{ fontSize: 12, color: '#6b7685', letterSpacing: 0.5 }}>POSITION OUVERTE</span>
-                </div>
-                {openPosition ? (
-                  <>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
-                      <span style={{ fontSize: 18, fontWeight: 700, color: openPosition.direction === 'BUY' ? '#4ade80' : '#d4574a' }}>{openPosition.direction}</span>
-                      <span className="label-font" style={{ fontSize: 12, color: '#9aa3af' }}>@ ${openPosition.entryPrice.toFixed(2)}</span>
-                      {statusInfo && (
-                        <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: statusInfo.color, padding: '3px 8px', background: '#0a0e14', border: `1px solid ${statusInfo.color}`, borderRadius: 4 }}>
-                          <ShieldCheck size={11} />
-                          {statusInfo.label}
-                        </span>
-                      )}
-                    </div>
-                    {livePnl !== null && (
-                      <div style={{ marginBottom: 10 }}>
-                        <span style={{ fontSize: 16, fontWeight: 700, color: livePnl.pnl >= 0 ? '#4ade80' : '#d4574a' }}>{livePnl.pnl >= 0 ? '+' : ''}${livePnl.pnl.toFixed(2)}</span>
-                        <span className="label-font" style={{ fontSize: 11, color: '#6b7685', marginLeft: 6 }}>({livePnl.pnlPct >= 0 ? '+' : ''}{(livePnl.pnlPct * 100).toFixed(2)}%, non réalisé)</span>
-                      </div>
-                    )}
-                    <div className="label-font" style={{ fontSize: 12, color: '#6b7685' }}>Taille: ${openPosition.positionSize.toFixed(2)}</div>
-                    <div className="label-font" style={{ fontSize: 12, color: '#6b7685' }}>Score V2 à l'ouverture: {openPosition.score ?? '—'}</div>
-                    {openPosition.peakUnrealizedPnl > 0 && (
-                      <div className="label-font" style={{ fontSize: 12, color: '#6b7685' }}>Pic de profit atteint: ${openPosition.peakUnrealizedPnl.toFixed(2)}</div>
-                    )}
-                    <div className="label-font" style={{ fontSize: 12, color: '#6b7685' }}>Ouvert: {new Date(openPosition.openedAt).toLocaleString('fr-FR')}</div>
-                    <div style={{ display: 'flex', gap: 20, marginTop: 12, paddingTop: 12, borderTop: '1px solid #1f2733', flexWrap: 'wrap' }}>
-                      <div>
-                        <div className="label-font" style={{ fontSize: 10, color: '#6b7685', textTransform: 'uppercase' }}>Stop-loss actuel</div>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: '#d4574a' }}>${openPosition.stopLoss.toFixed(2)}</div>
-                      </div>
-                      {showTP && (
-                        <div>
-                          <div className="label-font" style={{ fontSize: 10, color: '#6b7685', textTransform: 'uppercase' }}>Take-profit</div>
-                          <div style={{ fontSize: 13, fontWeight: 600, color: '#4ade80' }}>${openPosition.takeProfit.toFixed(2)}</div>
-                        </div>
-                      )}
-                    </div>
-                  </>
-                ) : <div className="label-font" style={{ fontSize: 13, color: '#6b7685' }}>Aucune position. Le serveur attend un signal fiable.</div>}
-              </div>
-            </div>
-
-            <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 12, overflow: 'hidden' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '14px 20px', borderBottom: '1px solid #1f2733' }}>
-                <History size={15} color="#d4a843" />
-                <span className="label-font" style={{ fontSize: 12, color: '#6b7685', letterSpacing: 0.5 }}>TRADES DU JOUR ({todayClosedTrades.length})</span>
-              </div>
-              {todayClosedTrades.length === 0 ? (
-                <div className="label-font" style={{ padding: 24, fontSize: 13, color: '#6b7685' }}>Aucun trade clos aujourd'hui pour l'instant.</div>
-              ) : (
-                todayClosedTrades.map(t => <TradeRow key={t.id} t={t} />)
-              )}
-            </div>
-          </>
-        )}
-
-        {activeTab === 'memoire' && (
-          <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 12, padding: 20 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18 }}>
-              <Brain size={16} color="#d4a843" />
-              <span className="label-font" style={{ fontSize: 13, fontWeight: 600 }}>Ce que le bot a appris (V2)</span>
-            </div>
-            <p className="label-font" style={{ fontSize: 13, color: '#9aa3af', lineHeight: 1.7, marginBottom: 20 }}>
-              Après chaque trade clos, le décalage de seuil est recalculé selon le winrate des 20 derniers trades, et appliqué directement (contrairement au shadow, en mode observation seule).
-            </p>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 14 }}>
-              <ParamCard label="Décalage de seuil appliqué" value={`${thresholdAdjustment >= 0 ? '+' : ''}${thresholdAdjustment}`} />
-              <ParamCard label="Winrate (20 derniers)" value={recentWinRate !== null ? `${recentWinRate}%` : '—'} />
-            </div>
-            {closedTrades.length < 5 && (
-              <div className="label-font" style={{ fontSize: 12, color: '#6b7685', marginTop: 18, fontStyle: 'italic' }}>
-                L'ajustement automatique s'active après 5 trades clos. ({closedTrades.length}/5)
-              </div>
-            )}
-          </div>
-        )}
-
-        {activeTab === 'historique' && (
-          <div>
-            {equityCurve.length > 1 && (
-              <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 12, padding: 20, marginBottom: 16 }}>
-                <div className="label-font" style={{ fontSize: 12, color: '#6b7685', marginBottom: 14 }}>COURBE D'ÉQUITÉ</div>
-                <ResponsiveContainer width="100%" height={200}>
-                  <LineChart data={equityCurve}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#1f2733" />
-                    <XAxis dataKey="trade" stroke="#4a5568" fontSize={10} />
-                    <YAxis stroke="#4a5568" fontSize={10} domain={['auto', 'auto']} />
-                    <Tooltip contentStyle={{ background: '#0a0e14', border: '1px solid #2a3441', borderRadius: 8 }} />
-                    <ReferenceLine y={STARTING_CAPITAL} stroke="#4a5568" strokeDasharray="4 4" />
-                    <Line type="monotone" dataKey="equity" stroke="#d4a843" strokeWidth={2} dot={false} />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-            <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 12, overflow: 'hidden' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '14px 20px', borderBottom: '1px solid #1f2733' }}>
-                <History size={15} color="#d4a843" />
-                <span className="label-font" style={{ fontSize: 12, color: '#6b7685', letterSpacing: 0.5 }}>JOURNAL DES TRADES</span>
-              </div>
-              {trades.length === 0 ? (
-                <div className="label-font" style={{ padding: 24, fontSize: 13, color: '#6b7685' }}>Aucun trade pour l'instant.</div>
-              ) : (
-                [...trades].reverse().map(t => (
-                  <div key={t.id} style={{ padding: '14px 20px', borderBottom: '1px solid #161c26' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 6 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                        <span style={{ fontSize: 13, fontWeight: 700, color: t.direction === 'BUY' ? '#4ade80' : '#d4574a' }}>{t.direction}</span>
-                        <span className="label-font" style={{ fontSize: 12, color: '#9aa3af' }}>@ ${t.entryPrice.toFixed(2)}{t.status === 'closed' ? ` → $${t.exitPrice.toFixed(2)}` : ''}</span>
-                        {t.status === 'open' ? (
-                          <span className="label-font" style={{ fontSize: 11, color: '#4a90d9', padding: '3px 8px', background: '#0d1f33', borderRadius: 4 }}>OUVERT</span>
-                        ) : (
-                          <span className="label-font" style={{ fontSize: 10, color: '#6b7685', padding: '2px 6px', background: '#0a0e14', borderRadius: 4 }}>{t.closeReason}</span>
-                        )}
-                      </div>
-                      {t.status === 'closed' && (
-                        <span style={{ fontSize: 13, fontWeight: 600, color: t.pnl >= 0 ? '#4ade80' : '#d4574a' }}>{t.pnl >= 0 ? '+' : ''}${t.pnl.toFixed(2)}</span>
-                      )}
-                    </div>
-                    {t.status === 'closed' && t.openedAt && t.closedAt && (
-                      <div className="label-font" style={{ fontSize: 11, color: '#6b7685', marginBottom: 6 }}>
-                        Ouvert le {new Date(t.openedAt).toLocaleString('fr-FR')} &middot; Fermé le {new Date(t.closedAt).toLocaleString('fr-FR')} &middot; Durée : {formatDuration(t.openedAt, t.closedAt)}
-                      </div>
-                    )}
-                    {t.status === 'closed' && (
-                      <div className="label-font" style={{ fontSize: 12, color: '#9aa3af', lineHeight: 1.5, fontStyle: 'italic' }}>{interpretTrade(t)}</div>
-                    )}
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        )}
       </div>
-    </div>
-  );
-}
-
-function StatCard({ label, value, accent }) {
-  return (
-    <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 10, padding: '14px 16px' }}>
-      <div className="label-font" style={{ fontSize: 10, color: '#6b7685', letterSpacing: 0.5, marginBottom: 6, textTransform: 'uppercase' }}>{label}</div>
-      <div style={{ fontSize: 18, fontWeight: 700, color: accent }}>{value}</div>
-    </div>
-  );
-}
-
-function PeriodCard({ label, data }) {
-  if (!data || data.count === 0) {
-    return (
-      <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 10, padding: '12px 14px' }}>
-        <div className="label-font" style={{ fontSize: 10, color: '#6b7685', marginBottom: 6 }}>{label}</div>
-        <div className="label-font" style={{ fontSize: 12, color: '#6b7685' }}>Aucun trade</div>
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ background: '#10151f', border: '1px solid #1f2733', borderRadius: 10, padding: '12px 14px' }}>
-      <div className="label-font" style={{ fontSize: 10, color: '#6b7685', marginBottom: 6 }}>{label}</div>
-      <div style={{ fontSize: 15, fontWeight: 700, color: data.totalPnl >= 0 ? '#4ade80' : '#d4574a', marginBottom: 2 }}>
-        {data.totalPnl >= 0 ? '+' : ''}${data.totalPnl.toFixed(2)}
-      </div>
-      <div className="label-font" style={{ fontSize: 10, color: '#6b7685' }}>{data.count} trade{data.count > 1 ? 's' : ''} &middot; {data.winRate}% win</div>
-    </div>
-  );
-}
-
-function ParamCard({ label, value }) {
-  return (
-    <div style={{ background: '#0a0e14', border: '1px solid #1f2733', borderRadius: 8, padding: '14px 16px', textAlign: 'center' }}>
-      <div style={{ fontSize: 20, fontWeight: 700, color: '#d4a843', marginBottom: 4 }}>{value}</div>
-      <div className="label-font" style={{ fontSize: 10, color: '#6b7685' }}>{label}</div>
     </div>
   );
 }
