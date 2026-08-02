@@ -324,4 +324,156 @@ export default function TradingBot({ apiPath = '/api/state', symbolLabel = 'XAU/
                     <div className="body-font" style={{ fontSize: 12, color: '#b5b5c0' }}>Taille: ${openPosition.positionSize.toFixed(2)}</div>
                     <div className="body-font" style={{ fontSize: 12, color: '#b5b5c0' }}>Score V2 à l'ouverture: {openPosition.score ?? '—'}</div>
                     {openPosition.peakUnrealizedPnl > 0 && (
-                      <div className="body-font" style={{ fontSize: 12, color: '#b5b5c0' }}>Pic de
+                      <div className="body-font" style={{ fontSize: 12, color: '#b5b5c0' }}>Pic de profit atteint: ${openPosition.peakUnrealizedPnl.toFixed(2)}</div>
+                    )}
+                    <div className="body-font" style={{ fontSize: 12, color: '#b5b5c0' }}>Ouvert: {new Date(openPosition.openedAt).toLocaleString('fr-FR')}</div>
+                    <div style={{ display: 'flex', gap: 20, marginTop: 12, paddingTop: 12, borderTop: '1px solid #2c2c38', flexWrap: 'wrap' }}>
+                      <div>
+                        <div className="body-font" style={{ fontSize: 10, color: '#8a8a95', textTransform: 'uppercase' }}>Stop-loss actuel</div>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: '#e5555a' }}>${openPosition.stopLoss.toFixed(2)}</div>
+                      </div>
+                      {showTP && (
+                        <div>
+                          <div className="body-font" style={{ fontSize: 10, color: '#8a8a95', textTransform: 'uppercase' }}>Take-profit</div>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: '#4ade80' }}>${openPosition.takeProfit.toFixed(2)}</div>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                ) : <div className="body-font" style={{ fontSize: 13, color: '#8a8a95' }}>Aucune position. Le serveur attend un signal fiable.</div>}
+              </div>
+            </div>
+
+            <div style={{ background: '#1A1A22', border: '1px solid #2c2c38', borderRadius: 12, overflow: 'hidden' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '14px 20px', borderBottom: '1px solid #2c2c38' }}>
+                <History size={15} color={ACCENT} />
+                <span className="body-font" style={{ fontSize: 12, color: '#8a8a95', letterSpacing: 0.5 }}>TRADES DU JOUR ({todayClosedTrades.length})</span>
+              </div>
+              {todayClosedTrades.length === 0 ? (
+                <div className="body-font" style={{ padding: 24, fontSize: 13, color: '#8a8a95' }}>Aucun trade clos aujourd'hui pour l'instant.</div>
+              ) : (
+                todayClosedTrades.map(t => <TradeRow key={t.id} t={t} />)
+              )}
+            </div>
+          </>
+        )}
+
+        {activeTab === 'memoire' && (
+          <div style={{ background: '#1A1A22', border: '1px solid #2c2c38', borderRadius: 12, padding: 20 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18 }}>
+              <Brain size={16} color={ACCENT} />
+              <span className="body-font" style={{ fontSize: 13, fontWeight: 600 }}>Ce que le bot a appris (V2)</span>
+            </div>
+            <p className="body-font" style={{ fontSize: 13, color: '#b5b5c0', lineHeight: 1.7, marginBottom: 20 }}>
+              Après chaque trade clos, le décalage de seuil est recalculé selon le winrate des 20 derniers trades, et appliqué directement (contrairement au shadow, en mode observation seule).
+            </p>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 14 }}>
+              <ParamCard label="Décalage de seuil appliqué" value={`${thresholdAdjustment >= 0 ? '+' : ''}${thresholdAdjustment}`} />
+              <ParamCard label="Winrate (20 derniers)" value={recentWinRate !== null ? `${recentWinRate}%` : '—'} />
+            </div>
+            {closedTrades.length < 5 && (
+              <div className="body-font" style={{ fontSize: 12, color: '#8a8a95', marginTop: 18, fontStyle: 'italic' }}>
+                L'ajustement automatique s'active après 5 trades clos. ({closedTrades.length}/5)
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'historique' && (
+          <div>
+            {equityCurve.length > 1 && (
+              <div style={{ background: '#1A1A22', border: '1px solid #2c2c38', borderRadius: 12, padding: 20, marginBottom: 16 }}>
+                <div className="body-font" style={{ fontSize: 12, color: '#8a8a95', marginBottom: 14 }}>COURBE D'ÉQUITÉ</div>
+                <ResponsiveContainer width="100%" height={200}>
+                  <LineChart data={equityCurve}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#2c2c38" />
+                    <XAxis dataKey="trade" stroke="#5a5a68" fontSize={10} />
+                    <YAxis stroke="#5a5a68" fontSize={10} domain={['auto', 'auto']} />
+                    <Tooltip contentStyle={{ background: '#0B0B0F', border: '1px solid #2c2c38', borderRadius: 8 }} />
+                    <ReferenceLine y={STARTING_CAPITAL} stroke="#5a5a68" strokeDasharray="4 4" />
+                    <Line type="monotone" dataKey="equity" stroke={ACCENT} strokeWidth={2} dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+            <div style={{ background: '#1A1A22', border: '1px solid #2c2c38', borderRadius: 12, overflow: 'hidden' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '14px 20px', borderBottom: '1px solid #2c2c38' }}>
+                <History size={15} color={ACCENT} />
+                <span className="body-font" style={{ fontSize: 12, color: '#8a8a95', letterSpacing: 0.5 }}>JOURNAL DES TRADES</span>
+              </div>
+              {trades.length === 0 ? (
+                <div className="body-font" style={{ padding: 24, fontSize: 13, color: '#8a8a95' }}>Aucun trade pour l'instant.</div>
+              ) : (
+                [...trades].reverse().map(t => (
+                  <div key={t.id} style={{ padding: '14px 20px', borderBottom: '1px solid #242430' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 6 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: 13, fontWeight: 700, color: t.direction === 'BUY' ? '#4ade80' : '#e5555a' }}>{t.direction}</span>
+                        <span className="body-font" style={{ fontSize: 12, color: '#b5b5c0' }}>@ ${t.entryPrice.toFixed(2)}{t.status === 'closed' ? ` → $${t.exitPrice.toFixed(2)}` : ''}</span>
+                        {t.status === 'open' ? (
+                          <span className="body-font" style={{ fontSize: 11, color: '#4a90d9', padding: '3px 8px', background: '#12203a', borderRadius: 4 }}>OUVERT</span>
+                        ) : (
+                          <span className="body-font" style={{ fontSize: 10, color: '#8a8a95', padding: '2px 6px', background: '#0B0B0F', borderRadius: 4 }}>{t.closeReason}</span>
+                        )}
+                      </div>
+                      {t.status === 'closed' && (
+                        <span style={{ fontSize: 13, fontWeight: 600, color: t.pnl >= 0 ? '#4ade80' : '#e5555a' }}>{t.pnl >= 0 ? '+' : ''}${t.pnl.toFixed(2)}</span>
+                      )}
+                    </div>
+                    {t.status === 'closed' && t.openedAt && t.closedAt && (
+                      <div className="body-font" style={{ fontSize: 11, color: '#8a8a95', marginBottom: 6 }}>
+                        Ouvert le {new Date(t.openedAt).toLocaleString('fr-FR')} &middot; Fermé le {new Date(t.closedAt).toLocaleString('fr-FR')} &middot; Durée : {formatDuration(t.openedAt, t.closedAt)}
+                      </div>
+                    )}
+                    {t.status === 'closed' && (
+                      <div className="body-font" style={{ fontSize: 12, color: '#b5b5c0', lineHeight: 1.5, fontStyle: 'italic' }}>{interpretTrade(t)}</div>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StatCard({ label, value, accent }) {
+  return (
+    <div style={{ background: '#1A1A22', border: '1px solid #2c2c38', borderRadius: 10, padding: '14px 16px' }}>
+      <div className="body-font" style={{ fontSize: 10, color: '#8a8a95', letterSpacing: 0.5, marginBottom: 6, textTransform: 'uppercase' }}>{label}</div>
+      <div style={{ fontSize: 18, fontWeight: 700, color: accent }}>{value}</div>
+    </div>
+  );
+}
+
+function PeriodCard({ label, data }) {
+  if (!data || data.count === 0) {
+    return (
+      <div style={{ background: '#1A1A22', border: '1px solid #2c2c38', borderRadius: 10, padding: '12px 14px' }}>
+        <div className="body-font" style={{ fontSize: 10, color: '#8a8a95', marginBottom: 6 }}>{label}</div>
+        <div className="body-font" style={{ fontSize: 12, color: '#8a8a95' }}>Aucun trade</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ background: '#1A1A22', border: '1px solid #2c2c38', borderRadius: 10, padding: '12px 14px' }}>
+      <div className="body-font" style={{ fontSize: 10, color: '#8a8a95', marginBottom: 6 }}>{label}</div>
+      <div style={{ fontSize: 15, fontWeight: 700, color: data.totalPnl >= 0 ? '#4ade80' : '#e5555a', marginBottom: 2 }}>
+        {data.totalPnl >= 0 ? '+' : ''}${data.totalPnl.toFixed(2)}
+      </div>
+      <div className="body-font" style={{ fontSize: 10, color: '#8a8a95' }}>{data.count} trade{data.count > 1 ? 's' : ''} &middot; {data.winRate}% win</div>
+    </div>
+  );
+}
+
+function ParamCard({ label, value }) {
+  return (
+    <div style={{ background: '#0B0B0F', border: '1px solid #2c2c38', borderRadius: 8, padding: '14px 16px', textAlign: 'center' }}>
+      <div style={{ fontSize: 20, fontWeight: 700, color: '#D4AF37', marginBottom: 4 }}>{value}</div>
+      <div className="body-font" style={{ fontSize: 10, color: '#8a8a95' }}>{label}</div>
+    </div>
+  );
+}
