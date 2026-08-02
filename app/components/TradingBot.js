@@ -29,11 +29,10 @@ function formatDuration(openedAt, closedAt) {
   return rem > 0 ? `${hours}h${rem}` : `${hours}h`;
 }
 
-// Bornes de début de journée / semaine (lundi 00h) / mois, en heure locale
 function getPeriodBounds() {
   const now = new Date();
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
-  const dayOfWeek = startOfToday.getDay(); // 0 = dimanche
+  const dayOfWeek = startOfToday.getDay();
   const diffToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
   const startOfWeek = new Date(startOfToday);
   startOfWeek.setDate(startOfWeek.getDate() - diffToMonday);
@@ -165,7 +164,6 @@ export default function TradingBot({ apiPath = '/api/state', symbolLabel = 'XAU/
   const recent20 = closedTrades.slice(-20);
   const recentWinRate = recent20.length > 0 ? Math.round((recent20.filter(t => t.pnl > 0).length / recent20.length) * 1000) / 10 : null;
 
-  // --- Bilan par période ---
   const { startOfToday, startOfWeek, startOfMonth } = getPeriodBounds();
   const periodSummary = {
     today: computePeriodStats(closedTrades, startOfToday),
@@ -208,7 +206,7 @@ export default function TradingBot({ apiPath = '/api/state', symbolLabel = 'XAU/
             <Target size={20} color="#0a0e14" />
           </div>
           <div>
-            <div className="label-font" style={{ fontSize: 17, fontWeight: 700, letterSpacing: 0.3 }}>AURUM <span style={{ color: '#d4a843' }}>V2</span></div>
+            <div className="label-font" style={{ fontSize: 17, fontWeight: 700, letterSpacing: 0.3 }}>AURUM AI <span style={{ color: '#d4a843' }}>90MM</span></div>
             <div className="label-font" style={{ fontSize: 11, color: '#6b7685', letterSpacing: 1 }}>{symbolLabel} &middot; BOT RÉEL</div>
           </div>
         </div>
