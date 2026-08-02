@@ -1,70 +1,197 @@
 "use client";
-import React, { useState, useEffect } from 'react';
-import { Brain, TrendingUp, Activity, Trophy, ChevronRight, Server } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
+import { TrendingUp, TrendingDown, Target, RefreshCw, Server, ShieldCheck, History, Brain, AlertTriangle } from 'lucide-react';
 
-const CARD_ACCENT = '#D4AF37';
-const CARD_ACCENT_DARK = '#B8860B';
+const STARTING_CAPITAL = 10000;
+const REFRESH_INTERVAL = 30000;
+const ACCENT = '#D4AF37';
+const ACCENT_DARK = '#B8860B';
 
-function useReadOnly(path) {
-  const [data, setData] = useState(null);
-  const [error, setError] = useState(false);
+const STATUS_LABELS = {
+  sl_fixe: { label: 'Stop-loss fixe', color: '#e5555a' },
+  breakeven_actif: { label: 'Break-even actif', color: '#D4AF37' },
+  trailing_actif: { label: 'Trailing actif', color: '#4ade80' },
+  profit_securise: { label: 'Profit sécurisé', color: '#4ade80' },
+};
 
-  useEffect(() => {
-    let cancelled = false;
-    fetch(path, { cache: 'no-store' })
-      .then(res => res.json())
-      .then(json => { if (!cancelled) setData(json); })
-      .catch(() => { if (!cancelled) setError(true); });
-    return () => { cancelled = true; };
-  }, [path]);
-
-  return { data, error };
+function getPositionStatus(position) {
+  if (!position) return null;
+  if (position.profitSecured) return 'profit_securise';
+  if (position.trailingActive) return 'trailing_actif';
+  if (position.breakEvenTriggered) return 'breakeven_actif';
+  return 'sl_fixe';
 }
 
-function Card({ href, icon, title, subtitle, children }) {
+function formatDuration(openedAt, closedAt) {
+  const minutes = Math.round((closedAt - openedAt) / 60000);
+  if (minutes < 60) return `${minutes}min`;
+  const hours = Math.floor(minutes / 60);
+  const rem = minutes % 60;
+  return rem > 0 ? `${hours}h${rem}` : `${hours}h`;
+}
+
+function getPeriodBounds() {
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+  const dayOfWeek = startOfToday.getDay();
+  const diffToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+  const startOfWeek = new Date(startOfToday);
+  startOfWeek.setDate(startOfWeek.getDate() - diffToMonday);
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+  return {
+    startOfToday: startOfToday.getTime(),
+    startOfWeek: startOfWeek.getTime(),
+    startOfMonth: startOfMonth.getTime(),
+  };
+}
+
+function computePeriodStats(closedTrades, startTime) {
+  const periodTrades = closedTrades.filter(t => t.closedAt >= startTime);
+  if (periodTrades.length === 0) return { count: 0, totalPnl: 0, winRate: 0 };
+  const wins = periodTrades.filter(t => t.pnl > 0).length;
+  const totalPnl = periodTrades.reduce((sum, t) => sum + t.pnl, 0);
+  const winRate = Math.round((wins / periodTrades.length) * 1000) / 10;
+  return { count: periodTrades.length, totalPnl, winRate };
+}
+
+function interpretTrade(trade) {
+  const won = trade.pnl >= 0;
+  switch (trade.closeReason) {
+    case 'stop_loss':
+      return won
+        ? "Sortie sur stop-loss avec un léger gain — probablement un mouvement de prix entre deux vérifications."
+        : "Sortie sur stop-loss initial (1.5×ATR). Le marché est allé à l'encontre de la position sans jamais atteindre le seuil de break-even.";
+    case 'breakeven_stop':
+      return "Position sortie proche de l'équilibre : le trade est parti en profit, le stop a été remonté à l'entrée, puis le marché s'est retourné.";
+    case 'trailing_stop':
+      return won
+        ? "Gain sécurisé par le trailing stop ATR après un mouvement favorable prolongé."
+        : "Le trailing s'était activé mais le marché s'est retourné plus vite que le stop ne pouvait suivre.";
+    case 'profit_secured_stop':
+      return won
+        ? `Gain protégé par le Profit Sécurisé progressif — le SL a suivi le pic de profit atteint (${trade.peakUnrealizedPnl != null ? '$' + trade.peakUnrealizedPnl.toFixed(2) : 'pic non enregistré'}) sans jamais redescendre.`
+        : "Sortie via le Profit Sécurisé malgré une perte finale — cas rare, probablement un décalage d'exécution (vérification périodique, pas en continu).";
+    case 'no_traction_exit':
+      return "Sortie rapide : le trade n'a montré aucun signe de traction favorable dans les 30 premières minutes et perdait déjà — coupé plus tôt qu'un stop-loss complet.";
+    case 'take_profit':
+      return "Take-profit fixe atteint (3×ATR) avant que le trailing ou le PS n'ait eu l'occasion de s'activer.";
+    case 'engine_migration_close':
+      return "Position fermée automatiquement lors de la bascule du moteur V1 vers V2 — garde-fou de migration, pas une décision de trading.";
+    case 'manual_close':
+      return won ? "Fermé manuellement en profit." : "Fermé manuellement en perte.";
+    case 'target':
+      return "Trade V1 — fermé sur l'objectif de profit fixe (+1.5%).";
+    case 'stop':
+      return "Trade V1 — fermé sur le stop-loss fixe (-0.8%).";
+    case 'signal_reversal':
+      return "Trade V1 — fermé sur retournement de signal confirmé sur 2 cycles consécutifs.";
+    default:
+      return "Raison de clôture non reconnue.";
+  }
+}
+
+function TradeRow({ t }) {
   return (
-    <a href={href} style={{
-      display: 'block', textDecoration: 'none', color: 'inherit',
-      background: '#1A1A22', border: '1px solid #2c2c38', borderRadius: 14,
-      padding: 20, transition: 'border-color 0.15s'
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{
-            width: 34, height: 34, borderRadius: 8, background: '#242430',
-            display: 'flex', alignItems: 'center', justifyContent: 'center'
-          }}>
-            {icon}
-          </div>
-          <div>
-            <div className="body-font" style={{ fontSize: 15, fontWeight: 700, color: '#FFFFFF' }}>{title}</div>
-            <div className="body-font" style={{ fontSize: 11, color: '#8a8a95' }}>{subtitle}</div>
-          </div>
+    <div style={{ padding: '14px 20px', borderBottom: '1px solid #242430' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 6 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: t.direction === 'BUY' ? '#4ade80' : '#e5555a' }}>{t.direction}</span>
+          <span className="body-font" style={{ fontSize: 12, color: '#b5b5c0' }}>@ ${t.entryPrice.toFixed(2)} → ${t.exitPrice.toFixed(2)}</span>
+          <span className="body-font" style={{ fontSize: 10, color: '#8a8a95', padding: '2px 6px', background: '#0B0B0F', borderRadius: 4 }}>{t.closeReason}</span>
         </div>
-        <ChevronRight size={18} color="#8a8a95" />
+        <span style={{ fontSize: 13, fontWeight: 600, color: t.pnl >= 0 ? '#4ade80' : '#e5555a' }}>{t.pnl >= 0 ? '+' : ''}${t.pnl.toFixed(2)}</span>
       </div>
-      {children}
-    </a>
-  );
-}
-
-function MiniStat({ label, value, accent }) {
-  return (
-    <div>
-      <div className="body-font" style={{ fontSize: 10, color: '#8a8a95', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>{label}</div>
-      <div style={{ fontSize: 15, fontWeight: 700, color: accent || '#FFFFFF' }}>{value}</div>
+      {t.openedAt && t.closedAt && (
+        <div className="body-font" style={{ fontSize: 11, color: '#8a8a95', marginBottom: 6 }}>
+          Ouvert le {new Date(t.openedAt).toLocaleString('fr-FR')} &middot; Fermé le {new Date(t.closedAt).toLocaleString('fr-FR')} &middot; Durée : {formatDuration(t.openedAt, t.closedAt)}
+        </div>
+      )}
+      <div className="body-font" style={{ fontSize: 12, color: '#b5b5c0', lineHeight: 1.5, fontStyle: 'italic' }}>{interpretTrade(t)}</div>
     </div>
   );
 }
 
-export default function Hub() {
-  const { data: xau } = useReadOnly('/api/state');
-  const { data: eur } = useReadOnly('/api/state-eurusd');
-  const { data: shadowXau } = useReadOnly('/api/shadow-stats?symbol=XAU/USD');
-  const { data: shadowEur } = useReadOnly('/api/shadow-stats?symbol=EUR/USD');
-  const { data: predictions } = useReadOnly('/api/predictions');
+export default function TradingBot({ apiPath = '/api/state', symbolLabel = 'XAU/USD' }) {
+  const [state, setState] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [activeTab, setActiveTab] = useState('live');
+  const intervalRef = useRef(null);
 
-  const fmtMoney = (v) => (typeof v === 'number' ? `$${v.toFixed(2)}` : '—');
+  const fetchState = useCallback(async () => {
+    try {
+      const res = await fetch(apiPath, { cache: 'no-store' });
+      const data = await res.json();
+      setState(data);
+      setError(null);
+    } catch (e) {
+      setError('Impossible de contacter le serveur : ' + e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [apiPath]);
+
+  useEffect(() => {
+    fetchState();
+    intervalRef.current = setInterval(fetchState, REFRESH_INTERVAL);
+    return () => clearInterval(intervalRef.current);
+  }, [fetchState]);
+
+  if (loading) {
+    return (
+      <div style={{ minHeight: '100vh', background: '#0B0B0F', color: '#FFFFFF', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: "'Montserrat', sans-serif" }}>
+        <div>Chargement...</div>
+      </div>
+    );
+  }
+
+  const trades = state?.trades || [];
+  const account = state?.account || { balance: STARTING_CAPITAL };
+  const openPosition = state?.openPosition || null;
+  const lastCheckedAt = state?.lastCheckedAt || null;
+  const priceHistory = state?.priceHistory || [];
+  const shadowLog = state?.shadowLog || [];
+  const thresholdAdjustment = state?.params?.thresholdAdjustment ?? 0;
+
+  const closedTrades = trades.filter(t => t.status === 'closed');
+  const winRate = closedTrades.length > 0 ? (closedTrades.filter(t => t.pnl > 0).length / closedTrades.length * 100).toFixed(1) : '—';
+  const totalPnl = closedTrades.reduce((sum, t) => sum + t.pnl, 0);
+  const equityCurve = closedTrades.reduce((acc, t) => {
+    const last = acc.length > 0 ? acc[acc.length - 1].equity : STARTING_CAPITAL;
+    acc.push({ trade: acc.length + 1, equity: last + t.pnl });
+    return acc;
+  }, [{ trade: 0, equity: STARTING_CAPITAL }]);
+
+  const recent20 = closedTrades.slice(-20);
+  const recentWinRate = recent20.length > 0 ? Math.round((recent20.filter(t => t.pnl > 0).length / recent20.length) * 1000) / 10 : null;
+
+  const { startOfToday, startOfWeek, startOfMonth } = getPeriodBounds();
+  const periodSummary = {
+    today: computePeriodStats(closedTrades, startOfToday),
+    thisWeek: computePeriodStats(closedTrades, startOfWeek),
+    thisMonth: computePeriodStats(closedTrades, startOfMonth),
+  };
+  const todayClosedTrades = [...closedTrades].filter(t => t.closedAt >= startOfToday).reverse();
+
+  const lastCycle = shadowLog.length > 0 ? shadowLog[shadowLog.length - 1] : null;
+  const lastV2Result = lastCycle?.v2Result || null;
+
+  const minutesSinceCheck = lastCheckedAt ? Math.round((Date.now() - lastCheckedAt) / 60000) : null;
+  const positionStatusKey = getPositionStatus(openPosition);
+  const statusInfo = positionStatusKey ? STATUS_LABELS[positionStatusKey] : null;
+
+  const currentPrice = priceHistory.length > 0 ? priceHistory[priceHistory.length - 1].price : null;
+  const livePnl = openPosition && currentPrice !== null
+    ? (() => {
+        const pnlPct = openPosition.direction === 'BUY'
+          ? (currentPrice - openPosition.entryPrice) / openPosition.entryPrice
+          : (openPosition.entryPrice - currentPrice) / openPosition.entryPrice;
+        return { pnlPct, pnl: openPosition.positionSize * pnlPct };
+      })()
+    : null;
+
+  const showTP = openPosition && !openPosition.trailingActive && !openPosition.profitSecured;
 
   return (
     <div style={{ minHeight: '100vh', background: '#0B0B0F', color: '#FFFFFF', fontFamily: "'Montserrat', sans-serif" }}>
@@ -73,58 +200,128 @@ export default function Hub() {
         * { box-sizing: border-box; }
         .body-font { font-family: 'Montserrat', sans-serif; }
         .title-font { font-family: 'Cinzel', serif; letter-spacing: 0.5px; }
-        a:active { opacity: 0.8; }
+        button:focus-visible { outline: 2px solid ${ACCENT}; outline-offset: 2px; }
       `}</style>
 
-      <div style={{ borderBottom: '1px solid #2c2c38', padding: '24px 28px', display: 'flex', alignItems: 'center', gap: 14 }}>
-        <div style={{
-          width: 40, height: 40, borderRadius: 9, background: `linear-gradient(135deg, ${CARD_ACCENT}, ${CARD_ACCENT_DARK})`,
-          display: 'flex', alignItems: 'center', justifyContent: 'center'
-        }}>
-          <Brain size={21} color="#0B0B0F" />
+      <div style={{ borderBottom: '1px solid #2c2c38', padding: '20px 28px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          <div style={{ width: 38, height: 38, borderRadius: 8, background: `linear-gradient(135deg, ${ACCENT}, ${ACCENT_DARK})`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Target size={20} color="#0B0B0F" />
+          </div>
+          <div>
+            <div className="title-font" style={{ fontSize: 18, fontWeight: 700 }}>AURUM AI <span style={{ color: ACCENT }}>90MM</span></div>
+            <div className="body-font" style={{ fontSize: 11, color: '#8a8a95', letterSpacing: 1 }}>{symbolLabel} &middot; BOT RÉEL</div>
+          </div>
         </div>
-        <div>
-          <div className="title-font" style={{ fontSize: 19, fontWeight: 700 }}>AURUM AI <span style={{ color: CARD_ACCENT }}>90MM</span></div>
-          <div className="body-font" style={{ fontSize: 11, color: '#8a8a95', letterSpacing: 1 }}>NAVIGATION CENTRALE</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <Server size={14} color="#4ade80" />
+          <span className="body-font" style={{ fontSize: 12, color: '#b5b5c0' }}>
+            {minutesSinceCheck !== null ? `Dernière vérif. : il y a ${minutesSinceCheck} min` : 'En attente du premier cycle serveur'}
+          </span>
+          <button onClick={fetchState} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4 }}>
+            <RefreshCw size={14} color="#8a8a95" />
+          </button>
         </div>
       </div>
 
-      <div style={{ padding: '24px 20px', maxWidth: 640, margin: '0 auto', display: 'grid', gap: 14 }}>
-
-        <Card href="/xauusd" icon={<TrendingUp size={17} color={CARD_ACCENT} />} title="XAU/USD" subtitle="Bot réel · V1/V2">
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <MiniStat label="Capital" value={fmtMoney(xau?.account?.balance)} accent="#4ade80" />
-            <MiniStat label="Position" value={xau?.openPosition ? xau.openPosition.direction : 'Aucune'} accent={xau?.openPosition ? '#4a90d9' : '#8a8a95'} />
+      <div style={{ padding: '24px 28px', maxWidth: 1200, margin: '0 auto' }}>
+        {error && (
+          <div style={{ background: '#2a1a1a', border: '1px solid #4a2229', borderRadius: 8, padding: '12px 16px', marginBottom: 20, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <AlertTriangle size={16} color="#e5555a" />
+            <span className="body-font" style={{ fontSize: 13, color: '#e8a8a8' }}>{error}</span>
           </div>
-        </Card>
+        )}
 
-        <Card href="/eurusd" icon={<TrendingUp size={17} color={CARD_ACCENT} />} title="EUR/USD" subtitle="Bot réel · V1/V2">
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <MiniStat label="Capital" value={fmtMoney(eur?.account?.balance)} accent="#4ade80" />
-            <MiniStat label="Position" value={eur?.openPosition ? eur.openPosition.direction : 'Aucune'} accent={eur?.openPosition ? '#4a90d9' : '#8a8a95'} />
-          </div>
-        </Card>
-
-        <Card href="/shadow-dashboard" icon={<Activity size={17} color={CARD_ACCENT} />} title="Shadow V2" subtitle="XAU/USD + EUR/USD · Simulation">
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <MiniStat label="XAU Win Rate" value={shadowXau?.winRate != null ? `${shadowXau.winRate}%` : '—'} />
-            <MiniStat label="EUR Win Rate" value={shadowEur?.winRate != null ? `${shadowEur.winRate}%` : '—'} />
-          </div>
-        </Card>
-
-        <Card href="/predictions-dashboard" icon={<Trophy size={17} color={CARD_ACCENT} />} title="PrédireFoot" subtitle="Prédictions du jour">
-          <MiniStat
-            label="Matchs analysés"
-            value={Array.isArray(predictions?.matches) ? predictions.matches.length : (predictions?.count ?? '—')}
-          />
-        </Card>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'center', marginTop: 8 }}>
-          <Server size={12} color="#4ade80" />
-          <span className="body-font" style={{ fontSize: 11, color: '#8a8a95' }}>Aperçu en lecture seule — aucun appel Twelve Data</span>
+        <div style={{ display: 'flex', gap: 4, background: '#1A1A22', border: '1px solid #2c2c38', borderRadius: 8, padding: 4, marginBottom: 20, width: 'fit-content' }}>
+          {['live', 'historique', 'memoire'].map(tab => (
+            <button key={tab} onClick={() => setActiveTab(tab)}
+              style={{ padding: '8px 16px', background: activeTab === tab ? '#2c2c38' : 'transparent', border: 'none', borderRadius: 6, color: activeTab === tab ? '#FFFFFF' : '#8a8a95', fontFamily: 'Montserrat', fontSize: 12, fontWeight: 600, cursor: 'pointer', textTransform: 'capitalize' }}>
+              {tab}
+            </button>
+          ))}
         </div>
 
-      </div>
-    </div>
-  );
-}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 16 }}>
+          <StatCard label="Capital" value={`$${account.balance.toFixed(2)}`} accent={account.balance >= STARTING_CAPITAL ? '#4ade80' : '#e5555a'} />
+          <StatCard label="P&L Total" value={`${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`} accent={totalPnl >= 0 ? '#4ade80' : '#e5555a'} />
+          <StatCard label="Win Rate" value={`${winRate}${winRate !== '—' ? '%' : ''}`} accent={ACCENT} />
+          <StatCard label="Trades clos" value={closedTrades.length} accent="#b5b5c0" />
+          <StatCard label="Décalage seuil (V2)" value={`${thresholdAdjustment >= 0 ? '+' : ''}${thresholdAdjustment}`} accent="#b5b5c0" />
+        </div>
+
+        <div style={{ marginBottom: 24 }}>
+          <div className="body-font" style={{ fontSize: 11, color: '#8a8a95', marginBottom: 10, letterSpacing: 0.5 }}>BILAN PAR PÉRIODE</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+            <PeriodCard label="Aujourd'hui" data={periodSummary.today} />
+            <PeriodCard label="Cette semaine" data={periodSummary.thisWeek} />
+            <PeriodCard label="Ce mois" data={periodSummary.thisMonth} />
+          </div>
+        </div>
+
+        {activeTab === 'live' && (
+          <>
+            {priceHistory.length > 0 && (
+              <div style={{ background: '#1A1A22', border: '1px solid #2c2c38', borderRadius: 12, padding: 20, marginBottom: 20 }}>
+                <div className="body-font" style={{ fontSize: 12, color: '#8a8a95', marginBottom: 14, letterSpacing: 0.5 }}>{symbolLabel} &middot; 5 MIN (dernier cycle serveur)</div>
+                <ResponsiveContainer width="100%" height={240}>
+                  <LineChart data={priceHistory}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#2c2c38" />
+                    <XAxis dataKey="time" stroke="#5a5a68" fontSize={10} tick={{ fill: '#8a8a95' }} />
+                    <YAxis domain={['auto', 'auto']} stroke="#5a5a68" fontSize={10} tick={{ fill: '#8a8a95' }} />
+                    <Tooltip contentStyle={{ background: '#0B0B0F', border: '1px solid #2c2c38', borderRadius: 8, fontSize: 12 }} />
+                    <Line type="monotone" dataKey="price" stroke={ACCENT} strokeWidth={2} dot={false} />
+                    {openPosition && <ReferenceLine y={openPosition.entryPrice} stroke="#4a90d9" strokeDasharray="4 4" label={{ value: 'Entrée', fill: '#4a90d9', fontSize: 10 }} />}
+                    {openPosition && <ReferenceLine y={openPosition.stopLoss} stroke="#e5555a" strokeDasharray="4 4" label={{ value: 'SL', fill: '#e5555a', fontSize: 10 }} />}
+                    {showTP && <ReferenceLine y={openPosition.takeProfit} stroke="#4ade80" strokeDasharray="4 4" label={{ value: 'TP', fill: '#4ade80', fontSize: 10 }} />}
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 20 }}>
+              <div style={{ background: '#1A1A22', border: '1px solid #2c2c38', borderRadius: 12, padding: 20 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+                  <TrendingUp size={15} color={ACCENT} />
+                  <span className="body-font" style={{ fontSize: 12, color: '#8a8a95', letterSpacing: 0.5 }}>DERNIER SIGNAL (serveur)</span>
+                </div>
+                {lastV2Result ? (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                      {lastV2Result.direction === 'BUY' ? <TrendingUp color="#4ade80" size={22} /> : <TrendingDown color="#e5555a" size={22} />}
+                      <span style={{ fontSize: 20, fontWeight: 700, color: lastV2Result.direction === 'BUY' ? '#4ade80' : '#e5555a' }}>{lastV2Result.direction}</span>
+                      <span className="body-font" style={{ fontSize: 11, color: '#8a8a95' }}>score {lastV2Result.score?.toFixed(1)} / seuil {lastV2Result.threshold}</span>
+                    </div>
+                    <div className="body-font" style={{ fontSize: 12, color: '#b5b5c0' }}>ADX : {lastV2Result.adx != null ? lastV2Result.adx.toFixed(1) : '—'}</div>
+                    {lastV2Result.blockedByRangeRegime && <div className="body-font" style={{ fontSize: 12, color: ACCENT, marginTop: 4 }}>⚠ Bloqué : régime range (ADX≤20)</div>}
+                    {lastV2Result.blockedByNoMomentum && <div className="body-font" style={{ fontSize: 12, color: ACCENT, marginTop: 4 }}>⚠ Bloqué : pas de momentum d'entrée</div>}
+                  </>
+                ) : <div className="body-font" style={{ fontSize: 13, color: '#8a8a95' }}>Pas encore de cycle enregistré.</div>}
+              </div>
+
+              <div style={{ background: '#1A1A22', border: '1px solid #2c2c38', borderRadius: 12, padding: 20 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+                  <Target size={15} color={ACCENT} />
+                  <span className="body-font" style={{ fontSize: 12, color: '#8a8a95', letterSpacing: 0.5 }}>POSITION OUVERTE</span>
+                </div>
+                {openPosition ? (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 18, fontWeight: 700, color: openPosition.direction === 'BUY' ? '#4ade80' : '#e5555a' }}>{openPosition.direction}</span>
+                      <span className="body-font" style={{ fontSize: 12, color: '#b5b5c0' }}>@ ${openPosition.entryPrice.toFixed(2)}</span>
+                      {statusInfo && (
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: statusInfo.color, padding: '3px 8px', background: '#0B0B0F', border: `1px solid ${statusInfo.color}`, borderRadius: 4 }}>
+                          <ShieldCheck size={11} />
+                          {statusInfo.label}
+                        </span>
+                      )}
+                    </div>
+                    {livePnl !== null && (
+                      <div style={{ marginBottom: 10 }}>
+                        <span style={{ fontSize: 16, fontWeight: 700, color: livePnl.pnl >= 0 ? '#4ade80' : '#e5555a' }}>{livePnl.pnl >= 0 ? '+' : ''}${livePnl.pnl.toFixed(2)}</span>
+                        <span className="body-font" style={{ fontSize: 11, color: '#8a8a95', marginLeft: 6 }}>({livePnl.pnlPct >= 0 ? '+' : ''}{(livePnl.pnlPct * 100).toFixed(2)}%, non réalisé)</span>
+                      </div>
+                    )}
+                    <div className="body-font" style={{ fontSize: 12, color: '#b5b5c0' }}>Taille: ${openPosition.positionSize.toFixed(2)}</div>
+                    <div className="body-font" style={{ fontSize: 12, color: '#b5b5c0' }}>Score V2 à l'ouverture: {openPosition.score ?? '—'}</div>
+                    {openPosition.peakUnrealizedPnl > 0 && (
+                      <div className="body-font" style={{ fontSize: 12, color: '#b5b5c0' }}>Pic de
