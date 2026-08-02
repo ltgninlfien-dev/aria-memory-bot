@@ -82,7 +82,7 @@ export default function Hub() {
           <Brain size={21} color="#0a0e14" />
         </div>
         <div>
-          <div className="label-font" style={{ fontSize: 18, fontWeight: 700 }}>AURUM <span style={{ color: CARD_ACCENT }}>HUB</span></div>
+          <div className="label-font" style={{ fontSize: 18, fontWeight: 700 }}>AURUM AI <span style={{ color: CARD_ACCENT }}>90MM</span></div>
           <div className="label-font" style={{ fontSize: 11, color: '#6b7685', letterSpacing: 1 }}>NAVIGATION CENTRALE</div>
         </div>
       </div>
